@@ -23,7 +23,9 @@ gcloud services enable \
     storage.googleapis.com \
     artifactregistry.googleapis.com \
     logging.googleapis.com \
-    cloudbuild.googleapis.com
+    cloudbuild.googleapis.com \
+    compute.googleapis.com \
+    vpcaccess.googleapis.com
 
 # 2. Storage Setup
 echo "Creating GCS Buckets..."
@@ -43,6 +45,14 @@ gcloud redis instances create $REDIS_NAME \
 REDIS_HOST=$(gcloud redis instances describe $REDIS_NAME --region=$REGION --format="value(host)")
 REDIS_PORT=$(gcloud redis instances describe $REDIS_NAME --region=$REGION --format="value(port)")
 echo "Redis instance created at $REDIS_HOST:$REDIS_PORT"
+
+# 3a. VPC Connector for Cloud Run to access Redis
+echo "Creating VPC Connector for Cloud Run..."
+gcloud compute networks vpc-access connectors create dpr-vpc-connector \
+    --region=$REGION \
+    --network=default \
+    --range=10.8.0.0/28 \
+    || echo "VPC Connector may already exist, continuing..."
 
 # 4. Artifact Registry
 echo "Creating Artifact Registry..."
@@ -83,6 +93,8 @@ gcloud run deploy dpr-active-controller \\
     --region=${REGION} \\
     --service-account=${SA_EMAIL} \\
     --set-env-vars="REDIS_HOST=${REDIS_HOST},REDIS_PORT=${REDIS_PORT},LOG_BUCKET=${BUCKET_NAME},ROLE=active" \\
+    --vpc-connector=dpr-vpc-connector \\
+    --vpc-egress=private-ranges-only \\
     --allow-unauthenticated
 
 # Deploy Passive Worker (Scale to 3 minimum for consensus)
@@ -91,6 +103,8 @@ gcloud run deploy dpr-passive-worker \\
     --region=${REGION} \\
     --service-account=${SA_EMAIL} \\
     --set-env-vars="REDIS_HOST=${REDIS_HOST},REDIS_PORT=${REDIS_PORT},LOG_BUCKET=${BUCKET_NAME},ROLE=passive,HISTORY_BUCKET=${HISTORY_BUCKET_NAME}" \\
+    --vpc-connector=dpr-vpc-connector \\
+    --vpc-egress=private-ranges-only \\
     --min-instances=3 \\
     --no-allow-unauthenticated
 EOF
