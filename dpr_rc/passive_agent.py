@@ -1,13 +1,16 @@
 """
-Passive Agent Worker for DPR-RC System
+Passive Agent Worker for DPR-RC System (Cache-Based Architecture)
 
 Per Architecture Spec Section 2.1:
 "Passive Agent (P) - A serverless worker representing a frozen snapshot of history,
 performing verification on demand."
 
-Per Mathematical Model Section 4.2:
-"Each historical agent A_k represents a frozen snapshot of the context state
-from a previous time step."
+ARCHITECTURE: Cache-Based Response Model
+- Passive agents are SHARD-AGNOSTIC workers
+- They dynamically connect to any target shard at query time
+- No restart/redeployment needed to handle different time-shards
+- Responses are written to Redis cache (not Pub/Sub)
+- Peer voting enables parallel RCP execution
 
 IMPORTANT: Passive Agents are PREVIOUS VERSIONS OF A*, not independent personas.
 They represent frozen model checkpoints at specific temporal points.
@@ -19,6 +22,8 @@ import json
 import redis
 import threading
 import hashlib
+import asyncio
+from datetime import datetime
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
@@ -27,7 +32,7 @@ import uvicorn
 import chromadb
 
 from .models import (
-    ComponentType, EventType, LogEntry, ConsensusVote
+    ComponentType, EventType, LogEntry, CachedResponse, PeerVote
 )
 from .logging_utils import StructuredLogger
 
@@ -35,8 +40,13 @@ from .logging_utils import StructuredLogger
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 WORKER_ID = os.getenv("HOSTNAME", f"worker-{os.getpid()}")
-WORKER_EPOCH = os.getenv("WORKER_EPOCH", "2020")  # The temporal epoch this worker represents
 HISTORY_BUCKET = os.getenv("HISTORY_BUCKET", None)
+
+# TTLs for cache entries
+RESPONSE_TTL = 60  # seconds
+VOTE_TTL = 60  # seconds
+HEARTBEAT_INTERVAL = 10  # seconds
+WORKER_READY_TTL = 30  # seconds
 
 logger = StructuredLogger(ComponentType.PASSIVE_WORKER)
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
@@ -44,6 +54,7 @@ redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=Tr
 RFI_STREAM = "dpr:rfi"
 GROUP_NAME = "passive_workers"
 CONSUMER_NAME = WORKER_ID
+WORKERS_READY_KEY = "dpr:workers:ready"
 
 
 @dataclass
@@ -53,12 +64,7 @@ class FrozenAgentState:
 
     Per Mathematical Model Section 4.2:
     "Each historical agent A_k represents a frozen snapshot of the context state
-    from a previous time step. Just as A* is a cut through the hierarchy at t=1,
-    A_k is a cut through the hierarchy relative to a historical reference point τ_k."
-
-    Per Architecture Spec Section 2:
-    "When the Active Agent (A*) requires information, it does not merely query a database.
-    It identifies past versions of itself, activates them, and initiates a consensus protocol."
+    from a previous time step."
     """
     creation_time: str
     epoch_year: int
@@ -69,8 +75,6 @@ class FrozenAgentState:
         Verify candidate answer against this frozen state's knowledge.
         In production, runs inference on the frozen model checkpoint.
         """
-        # Simulate temporal understanding based on frozen state
-        # Earlier epochs have different (possibly outdated) understanding
         return {
             "score": 0.85,
             "temporal_context": f"From {self.epoch_year} perspective",
@@ -82,181 +86,330 @@ class FrozenAgentState:
 
 class PassiveWorker:
     """
-    Passive Agent Worker - A frozen version of A* from a specific temporal epoch.
+    Shard-Agnostic Passive Agent Worker.
 
-    Key responsibilities:
-    1. Maintain a local vector store of historical context (ChromaDB)
-    2. Perform L2 verification using SLM reasoning
-    3. Calculate semantic quadrant position for L3 consensus
-    4. Cast votes via Redis Pub/Sub
+    Key architectural points:
+    1. Workers are SHARD-AGNOSTIC - they dynamically connect to any shard
+    2. The shard_id in each RFI determines which ChromaDB collection to query
+    3. Responses are cached in Redis (not published via Pub/Sub)
+    4. Workers perform peer voting on other responses for RCP
     """
 
-    def __init__(self, epoch_year: int = None):
-        self.epoch_year = epoch_year or int(WORKER_EPOCH)
-        self.frozen_state = FrozenAgentState(
-            creation_time=f"{self.epoch_year}-01-01",
-            epoch_year=self.epoch_year
-        )
+    def __init__(self):
+        self.worker_id = WORKER_ID
 
-        # Initialize vector store
+        # ChromaDB client for dynamic shard connections
         self.chroma = chromadb.Client()
-        self.collection = self.chroma.get_or_create_collection(
-            name=f"history_epoch_{self.epoch_year}",
-            metadata={"hnsw:space": "cosine"}
-        )
 
-        # Load historical data
-        self._ingest_data()
+        # Cache of shard collections (lazy-loaded)
+        self._shard_collections: Dict[str, Any] = {}
 
-        logger.logger.info(f"PassiveWorker initialized for epoch {self.epoch_year}, "
-                          f"collection has {self.collection.count()} documents")
+        # Initialize default data across common shards
+        self._initialize_default_shards()
 
-    def _ingest_data(self):
+        # Register as ready
+        self._register_ready()
+
+        # Start heartbeat thread
+        self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+        self._heartbeat_thread.start()
+
+        logger.logger.info(f"PassiveWorker {self.worker_id} initialized (shard-agnostic)")
+
+    def _initialize_default_shards(self):
+        """Initialize default shards with fallback data for testing."""
+        default_shards = ["2019", "2020", "2021", "2022", "2023", "2024", "broadcast"]
+
+        for shard_id in default_shards:
+            collection = self._get_shard_collection(shard_id)
+            if collection.count() == 0:
+                self._generate_fallback_data(shard_id, collection)
+
+    def _get_shard_collection(self, shard_id: str):
         """
-        CRITICAL FIX: Actually ingest data into the vector store.
-
-        This loads synthetic history or real data from configured sources.
-        Without data, retrieve() always returns None and no votes are cast.
+        Dynamically get or create a collection for a shard.
+        This enables shard-agnostic operation - no restart needed.
         """
-        # Check if we already have data
-        if self.collection.count() > 0:
-            logger.logger.info(f"Collection already has {self.collection.count()} documents")
-            return
+        if shard_id not in self._shard_collections:
+            collection_name = f"dpr_shard_{shard_id}"
+            self._shard_collections[shard_id] = self.chroma.get_or_create_collection(
+                name=collection_name,
+                metadata={"hnsw:space": "cosine"}
+            )
+            logger.logger.debug(f"Connected to shard collection: {collection_name}")
 
-        # Try to load from Redis cache (benchmark may have pre-loaded data)
-        cached_data = self._load_from_redis_cache()
-        if cached_data:
-            self._bulk_insert(cached_data)
-            return
+        return self._shard_collections[shard_id]
 
-        # Try to load from GCS bucket if configured
-        if HISTORY_BUCKET:
-            gcs_data = self._load_from_gcs()
-            if gcs_data:
-                self._bulk_insert(gcs_data)
-                return
+    def _register_ready(self):
+        """Register this worker as ready in Redis."""
+        redis_client.sadd(WORKERS_READY_KEY, self.worker_id)
+        redis_client.expire(WORKERS_READY_KEY, WORKER_READY_TTL)
+        logger.log_event("system", EventType.WORKER_READY, {"worker_id": self.worker_id})
 
-        # Fallback: Generate minimal synthetic data for testing
-        # This ensures the system can function even without external data
-        self._generate_fallback_data()
+    def _heartbeat_loop(self):
+        """Maintain heartbeat to keep worker registered as ready."""
+        while True:
+            try:
+                redis_client.sadd(WORKERS_READY_KEY, self.worker_id)
+                redis_client.expire(WORKERS_READY_KEY, WORKER_READY_TTL)
+            except Exception as e:
+                logger.logger.warning(f"Heartbeat error: {e}")
+            time.sleep(HEARTBEAT_INTERVAL)
 
-    def _load_from_redis_cache(self) -> Optional[List[Dict]]:
-        """Load pre-cached benchmark data from Redis"""
-        try:
-            cache_key = f"dpr:history_cache:{self.epoch_year}"
-            cached = redis_client.get(cache_key)
-            if cached:
-                data = json.loads(cached)
-                logger.logger.info(f"Loaded {len(data)} documents from Redis cache")
-                return data
-        except Exception as e:
-            logger.logger.warning(f"Failed to load from Redis cache: {e}")
-        return None
-
-    def _load_from_gcs(self) -> Optional[List[Dict]]:
-        """Load historical data from GCS bucket"""
-        try:
-            from google.cloud import storage
-            client = storage.Client()
-            bucket = client.bucket(HISTORY_BUCKET)
-            blob = bucket.blob(f"history_{self.epoch_year}.json")
-
-            if blob.exists():
-                data = json.loads(blob.download_as_string())
-                logger.logger.info(f"Loaded {len(data)} documents from GCS")
-                return data
-        except Exception as e:
-            logger.logger.warning(f"Failed to load from GCS: {e}")
-        return None
-
-    def _generate_fallback_data(self):
-        """Generate minimal synthetic data for testing"""
-        # Generate some baseline data so the system can function
+    def _generate_fallback_data(self, shard_id: str, collection):
+        """Generate minimal synthetic data for a shard."""
         fallback_docs = []
 
-        for year in range(2015, 2026):
-            for i in range(10):
-                doc_id = f"fallback_{year}_{i}"
-                content = f"Historical record from {year}: Research milestone {i} achieved. " \
-                         f"Progress in domain area with metrics showing improvement. " \
-                         f"Epoch {year} data point {i}."
+        # Parse year from shard_id if possible
+        try:
+            year = int(shard_id) if shard_id.isdigit() else 2020
+        except ValueError:
+            year = 2020
 
-                fallback_docs.append({
-                    "id": doc_id,
-                    "content": content,
-                    "metadata": {
-                        "year": year,
-                        "type": "fallback",
-                        "index": i
-                    }
-                })
+        for i in range(10):
+            doc_id = f"fallback_{shard_id}_{i}"
+            content = f"Historical record from {year}: Research milestone {i} achieved. " \
+                     f"Progress in domain area with metrics showing improvement. " \
+                     f"Shard {shard_id} data point {i}."
 
-        self._bulk_insert(fallback_docs)
-        logger.logger.info(f"Generated {len(fallback_docs)} fallback documents")
+            fallback_docs.append({
+                "id": doc_id,
+                "content": content,
+                "metadata": {"year": year, "type": "fallback", "index": i}
+            })
 
-    def _bulk_insert(self, documents: List[Dict]):
-        """Bulk insert documents into ChromaDB"""
+        self._bulk_insert(fallback_docs, collection)
+        logger.logger.info(f"Generated {len(fallback_docs)} fallback documents for shard {shard_id}")
+
+    def _bulk_insert(self, documents: List[Dict], collection):
+        """Bulk insert documents into a ChromaDB collection."""
         if not documents:
             return
 
-        ids = []
-        contents = []
-        metadatas = []
+        ids = [doc.get('id', hashlib.md5(doc['content'].encode()).hexdigest()[:12]) for doc in documents]
+        contents = [doc['content'] for doc in documents]
+        metadatas = [doc.get('metadata', {}) for doc in documents]
 
-        for doc in documents:
-            doc_id = doc.get('id', hashlib.md5(doc['content'].encode()).hexdigest()[:12])
-            ids.append(doc_id)
-            contents.append(doc['content'])
-            metadatas.append(doc.get('metadata', {}))
+        try:
+            collection.add(ids=ids, documents=contents, metadatas=metadatas)
+        except Exception as e:
+            if "duplicate" in str(e).lower() or "already" in str(e).lower():
+                # Skip duplicates silently
+                pass
+            else:
+                logger.logger.error(f"Failed to insert batch: {e}")
 
-        # Insert in batches to avoid memory issues
-        batch_size = 1000
-        for i in range(0, len(ids), batch_size):
-            batch_ids = ids[i:i+batch_size]
-            batch_contents = contents[i:i+batch_size]
-            batch_metadatas = metadatas[i:i+batch_size]
-
-            try:
-                # Try to add documents
-                self.collection.add(
-                    ids=batch_ids,
-                    documents=batch_contents,
-                    metadatas=batch_metadatas
-                )
-            except Exception as e:
-                # If add fails (e.g., duplicate IDs), try adding only non-existing docs
-                error_msg = str(e).lower()
-                if "duplicate" in error_msg or "already" in error_msg:
-                    # Get existing IDs and filter them out
-                    try:
-                        existing = self.collection.get(ids=batch_ids)
-                        existing_ids = set(existing.get('ids', []))
-                        new_ids = []
-                        new_contents = []
-                        new_metadatas = []
-                        for bid, bcontent, bmeta in zip(batch_ids, batch_contents, batch_metadatas):
-                            if bid not in existing_ids:
-                                new_ids.append(bid)
-                                new_contents.append(bcontent)
-                                new_metadatas.append(bmeta)
-                        if new_ids:
-                            self.collection.add(
-                                ids=new_ids,
-                                documents=new_contents,
-                                metadatas=new_metadatas
-                            )
-                    except Exception as e2:
-                        logger.logger.warning(f"Could not add non-duplicate docs: {e2}")
-                else:
-                    logger.logger.error(f"Failed to insert batch: {e}")
-
-        logger.logger.info(f"Inserted {len(ids)} documents into collection")
-
-    def ingest_benchmark_data(self, events: List[Dict]):
+    def retrieve_from_shard(self, shard_id: str, query_text: str) -> Optional[Dict[str, Any]]:
         """
-        Public method to ingest benchmark data directly.
-        Called by benchmark harness to load synthetic history.
+        Retrieve relevant content from a specific shard.
+        This is the key to shard-agnostic operation.
         """
+        collection = self._get_shard_collection(shard_id)
+
+        if collection.count() == 0:
+            logger.logger.warning(f"Shard {shard_id} is empty")
+            return None
+
+        try:
+            results = collection.query(
+                query_texts=[query_text],
+                n_results=3
+            )
+
+            if not results['documents'] or not results['documents'][0]:
+                return None
+
+            return {
+                "content": results['documents'][0][0],
+                "id": results['ids'][0][0],
+                "metadata": results['metadatas'][0][0] if results['metadatas'] else {},
+                "distance": results['distances'][0][0] if results.get('distances') else 0.0
+            }
+        except Exception as e:
+            logger.logger.error(f"Retrieval error from shard {shard_id}: {e}")
+            return None
+
+    def verify_l2(self, content: str, query: str, depth: int = 0) -> float:
+        """
+        L2 Verification using SLM reasoning.
+
+        Per Mathematical Model Section 5.2, Equation 9:
+        C(r_p) = V(q, context_p) · (1 / (1 + i))
+        """
+        query_tokens = set(query.lower().split())
+        content_tokens = set(content.lower().split())
+
+        if not query_tokens:
+            return 0.0
+
+        intersection = query_tokens & content_tokens
+        union = query_tokens | content_tokens
+
+        if not union:
+            return 0.0
+
+        base_score = len(intersection) / len(union)
+        length_factor = min(1.0, len(content) / 200.0)
+        v_score = (base_score * 0.6 + length_factor * 0.4)
+
+        # Apply depth penalty: 1/(1+i)
+        depth_penalty = 1.0 / (1.0 + depth)
+        confidence = v_score * depth_penalty
+
+        return max(0.0, min(1.0, confidence))
+
+    def compute_peer_vote(self, my_content: str, peer_response: CachedResponse) -> PeerVote:
+        """
+        Compute a peer vote on another agent's response.
+
+        Agreement score (v+): semantic similarity between responses
+        Disagreement score (v-): divergence indicator
+        """
+        peer_content = peer_response.content or ""
+
+        # Compute agreement based on content overlap
+        my_tokens = set(my_content.lower().split())
+        peer_tokens = set(peer_content.lower().split())
+
+        if not my_tokens or not peer_tokens:
+            agreement = 0.5
+            disagreement = 0.5
+        else:
+            intersection = my_tokens & peer_tokens
+            union = my_tokens | peer_tokens
+            similarity = len(intersection) / len(union) if union else 0.0
+
+            agreement = similarity
+            disagreement = 1.0 - similarity
+
+        return PeerVote(
+            trace_id=peer_response.trace_id,
+            voter_id=self.worker_id,
+            votee_id=peer_response.agent_id,
+            agreement_score=round(agreement, 3),
+            disagreement_score=round(disagreement, 3),
+            timestamp=datetime.utcnow().isoformat()
+        )
+
+    def cache_response(self, trace_id: str, shard_id: str, content: str, confidence: float):
+        """
+        Cache response in Redis instead of publishing via Pub/Sub.
+        Key pattern: dpr:response:{trace_id}:{agent_id}
+        """
+        response = CachedResponse(
+            trace_id=trace_id,
+            agent_id=self.worker_id,
+            shard_id=shard_id,
+            content_hash=hashlib.md5(content.encode()).hexdigest()[:12],
+            content=content[:500],  # Truncate for storage
+            confidence=confidence,
+            timestamp=datetime.utcnow().isoformat()
+        )
+
+        key = f"dpr:response:{trace_id}:{self.worker_id}"
+        redis_client.setex(key, RESPONSE_TTL, response.model_dump_json())
+
+        logger.log_event(trace_id, EventType.RESPONSE_CACHED, {
+            "worker_id": self.worker_id,
+            "shard_id": shard_id,
+            "confidence": confidence
+        })
+
+        return response
+
+    def cast_peer_votes(self, trace_id: str, my_content: str, wait_time: float = 1.0):
+        """
+        Cast peer votes on other agents' responses.
+        Voting can begin as soon as any peer response appears.
+        """
+        time.sleep(wait_time)  # Wait for other responses to appear
+
+        # Get all responses for this trace
+        pattern = f"dpr:response:{trace_id}:*"
+        for key in redis_client.scan_iter(match=pattern):
+            # Skip our own response
+            if key.endswith(f":{self.worker_id}"):
+                continue
+
+            data = redis_client.get(key)
+            if data:
+                try:
+                    peer_response = CachedResponse(**json.loads(data))
+                    vote = self.compute_peer_vote(my_content, peer_response)
+
+                    # Cache the vote
+                    vote_key = f"dpr:vote:{trace_id}:{self.worker_id}:{peer_response.agent_id}"
+                    redis_client.setex(vote_key, VOTE_TTL, vote.model_dump_json())
+
+                    logger.log_event(trace_id, EventType.PEER_VOTE_CAST, {
+                        "voter": self.worker_id,
+                        "votee": peer_response.agent_id,
+                        "agreement": vote.agreement_score
+                    })
+                except (json.JSONDecodeError, ValueError) as e:
+                    logger.logger.warning(f"Failed to parse peer response: {e}")
+
+    def process_rfi(self, rfi_data: Dict[str, Any]):
+        """
+        Process a Request for Information (RFI) from the Active Agent.
+
+        Flow:
+        1. Determine target shard from RFI
+        2. Dynamically connect to shard (no restart needed)
+        3. Retrieve relevant content
+        4. Verify with L2
+        5. Cache response in Redis
+        6. Cast peer votes on other responses
+        """
+        trace_id = rfi_data.get('trace_id', 'unknown')
+        query_text = rfi_data.get('query_text', '')
+        target_shards_str = rfi_data.get('target_shards', '[]')
+
+        # Parse target shards
+        try:
+            target_shards = json.loads(target_shards_str) if target_shards_str else []
+        except json.JSONDecodeError:
+            target_shards = []
+
+        # Determine which shard to query
+        # Shard-agnostic: we handle any shard dynamically
+        if target_shards and "broadcast" not in target_shards:
+            # Extract shard year from target (e.g., "shard_2020" -> "2020")
+            shard_id = target_shards[0].replace("shard_", "")
+        else:
+            shard_id = "broadcast"
+
+        # 1. Retrieve from dynamically-selected shard
+        doc = self.retrieve_from_shard(shard_id, query_text)
+        if not doc:
+            logger.logger.debug(f"No relevant content in shard {shard_id} for: {query_text[:50]}...")
+            return
+
+        # 2. L2 Verification
+        depth = doc.get('metadata', {}).get('hierarchy_depth', 0)
+        confidence = self.verify_l2(doc['content'], query_text, depth)
+
+        # Only respond if confidence meets threshold
+        if confidence < 0.3:
+            logger.logger.debug(f"Confidence {confidence:.2f} below threshold")
+            return
+
+        # 3. Cache response in Redis
+        self.cache_response(trace_id, shard_id, doc['content'], confidence)
+
+        # 4. Cast peer votes (in background to not block)
+        threading.Thread(
+            target=self.cast_peer_votes,
+            args=(trace_id, doc['content']),
+            daemon=True
+        ).start()
+
+    def ingest_benchmark_data(self, events: List[Dict], shard_id: str = "benchmark"):
+        """
+        Ingest benchmark data into a specific shard.
+        """
+        collection = self._get_shard_collection(shard_id)
+
         documents = []
         for event in events:
             documents.append({
@@ -270,183 +423,8 @@ class PassiveWorker:
                 }
             })
 
-        self._bulk_insert(documents)
-
-        # Also cache in Redis for other workers
-        try:
-            cache_key = f"dpr:history_cache:{self.epoch_year}"
-            redis_client.setex(cache_key, 3600, json.dumps(documents))  # 1 hour TTL
-        except Exception as e:
-            logger.logger.warning(f"Failed to cache in Redis: {e}")
-
-    def retrieve(self, query_text: str, timestamp_context: str = None) -> Optional[Dict[str, Any]]:
-        """
-        Retrieve relevant historical context from the vector store.
-
-        Returns the most relevant document matching the query.
-        """
-        if self.collection.count() == 0:
-            logger.logger.warning("Collection is empty, no documents to retrieve")
-            return None
-
-        try:
-            # Query the collection
-            results = self.collection.query(
-                query_texts=[query_text],
-                n_results=3,  # Get top 3 for better coverage
-                where=None  # Could filter by timestamp if needed
-            )
-
-            if not results['documents'] or not results['documents'][0]:
-                return None
-
-            # Return the best match
-            return {
-                "content": results['documents'][0][0],
-                "id": results['ids'][0][0],
-                "metadata": results['metadatas'][0][0] if results['metadatas'] else {},
-                "distance": results['distances'][0][0] if results.get('distances') else 0.0
-            }
-        except Exception as e:
-            logger.logger.error(f"Retrieval error: {e}")
-            return None
-
-    def verify_l2(self, content: str, query: str, depth: int = 0) -> float:
-        """
-        L2 Verification using SLM reasoning.
-
-        Per Mathematical Model Section 5.2, Equation 9:
-        C(r_p) = V(q, context_p) · (1 / (1 + i))
-
-        Where:
-        - V is the semantic verification score from SLM
-        - i is the hierarchy depth (inverse fidelity)
-
-        This implements a more sophisticated verification than simple keyword matching.
-        """
-        # Base semantic verification score V(q, context)
-        # In production, this would use an actual SLM like Phi-3
-
-        # Tokenize and compute overlap (simplified semantic similarity)
-        query_tokens = set(query.lower().split())
-        content_tokens = set(content.lower().split())
-
-        if not query_tokens:
-            return 0.0
-
-        # Jaccard-style similarity as proxy for semantic verification
-        intersection = query_tokens & content_tokens
-        union = query_tokens | content_tokens
-
-        if not union:
-            return 0.0
-
-        base_score = len(intersection) / len(union)
-
-        # Boost for longer content (more context = more reliable)
-        length_factor = min(1.0, len(content) / 200.0)
-
-        # Combine factors
-        v_score = (base_score * 0.6 + length_factor * 0.4)
-
-        # Apply depth penalty per mathematical model: 1/(1+i)
-        # This implements context fidelity decay for deeper hierarchy levels
-        depth_penalty = 1.0 / (1.0 + depth)
-
-        # Final confidence: C(r) = V × depth_penalty
-        confidence = v_score * depth_penalty
-
-        # Ensure score is in valid range [0, 1]
-        return max(0.0, min(1.0, confidence))
-
-    def calculate_quadrant(self, content: str, confidence: float) -> List[float]:
-        """
-        L3 Semantic Quadrant Topology calculation.
-
-        Per Mathematical Model Section 6.2:
-        "We map each response r_k to a topological coordinate ⟨v+, v−⟩ based on
-        the net alignment of positive and negative clusters within the voting population."
-
-        Returns [x, y] coordinates where:
-        - x represents agreement strength (0 = disagreement, 1 = strong agreement)
-        - y represents confidence/certainty (0 = uncertain, 1 = certain)
-        """
-        # Content-based position (deterministic for same content)
-        content_hash = hash(content)
-
-        # x-coordinate: based on content characteristics + confidence
-        # Higher confidence = more positive alignment
-        x_base = ((content_hash % 100) / 100.0)
-        x = (x_base * 0.5) + (confidence * 0.5)
-
-        # y-coordinate: based on temporal consistency indicator
-        y_base = (((content_hash >> 8) % 100) / 100.0)
-        y = (y_base * 0.3) + (confidence * 0.7)
-
-        return [round(x, 2), round(y, 2)]
-
-    def process_rfi(self, rfi_data: Dict[str, Any]):
-        """
-        Process a Request for Information (RFI) from the Active Agent.
-
-        Per Architecture Spec Section 4.3:
-        "Targeted Passive Agents wake up and ingest the query.
-        1. Load local frozen context.
-        2. Run SLM verification: 'Does context contain answer to Q?'
-        3. Calculate Confidence Score C based on SLM probability and memory depth."
-        """
-        trace_id = rfi_data.get('trace_id', 'unknown')
-        query_text = rfi_data.get('query_text', '')
-        ts_context = rfi_data.get('timestamp_context', '')
-        target_shards_str = rfi_data.get('target_shards', '[]')
-
-        # Parse target shards
-        try:
-            target_shards = json.loads(target_shards_str) if target_shards_str else []
-        except json.JSONDecodeError:
-            target_shards = []
-
-        # Check if this worker should handle this RFI
-        # Per spec: workers are time-sharded
-        my_shard = f"shard_{self.epoch_year}"
-        if target_shards and "broadcast" not in target_shards and my_shard not in target_shards:
-            logger.logger.debug(f"Skipping RFI {trace_id}: not in target shards {target_shards}")
-            return
-
-        # 1. Retrieval from frozen context
-        doc = self.retrieve(query_text, ts_context)
-        if not doc:
-            logger.logger.debug(f"No relevant history for query: {query_text[:50]}...")
-            return
-
-        # 2. L2 Verification using SLM
-        # Depth is 0 for direct retrieval, higher for summarized/compressed content
-        depth = doc.get('metadata', {}).get('hierarchy_depth', 0)
-        confidence = self.verify_l2(doc['content'], query_text, depth)
-
-        # Only vote if confidence meets threshold
-        if confidence < 0.3:
-            logger.logger.debug(f"Confidence {confidence:.2f} below threshold, not voting")
-            return
-
-        # 3. Calculate semantic quadrant for L3 consensus
-        quadrant = self.calculate_quadrant(doc['content'], confidence)
-
-        # 4. Cast vote
-        vote = ConsensusVote(
-            trace_id=trace_id,
-            worker_id=WORKER_ID,
-            content_hash=logger.hash_payload(doc['content']),
-            confidence_score=confidence,
-            semantic_quadrant=quadrant,
-            content_snippet=doc['content'][:500]  # Truncate long content
-        )
-
-        # Publish vote to response channel
-        redis_client.publish(f"dpr:responses:{trace_id}", json.dumps(vote.model_dump()))
-
-        logger.log_event(trace_id, EventType.VOTE_CAST, vote.model_dump(),
-                        metrics={"confidence": confidence, "epoch": self.epoch_year})
+        self._bulk_insert(documents, collection)
+        logger.logger.info(f"Ingested {len(documents)} benchmark documents to shard {shard_id}")
 
 
 # FastAPI Application
@@ -455,7 +433,7 @@ async def lifespan(app: FastAPI):
     """Lifespan context manager - starts worker thread on startup"""
     worker_thread = threading.Thread(target=run_worker_loop, daemon=True)
     worker_thread.start()
-    logger.logger.info(f"Passive Worker {WORKER_ID} started")
+    logger.logger.info(f"Passive Worker {WORKER_ID} started (shard-agnostic)")
     yield
     logger.logger.info(f"Passive Worker {WORKER_ID} shutting down")
 
@@ -466,11 +444,12 @@ app = FastAPI(title="DPR-PassiveWorker", lifespan=lifespan)
 @app.get("/")
 @app.get("/health")
 def health_check():
-    """Health check endpoint"""
+    """Health check endpoint for worker readiness verification."""
     return {
         "status": "healthy",
         "worker_id": WORKER_ID,
-        "epoch": WORKER_EPOCH
+        "shard_agnostic": True,
+        "ready": redis_client.sismember(WORKERS_READY_KEY, WORKER_ID)
     }
 
 
@@ -479,12 +458,13 @@ def ingest_data(data: Dict[str, Any]):
     """Endpoint to ingest benchmark data"""
     global _worker_instance
     if _worker_instance and 'events' in data:
-        _worker_instance.ingest_benchmark_data(data['events'])
-        return {"status": "ok", "ingested": len(data['events'])}
+        shard_id = data.get('shard_id', 'benchmark')
+        _worker_instance.ingest_benchmark_data(data['events'], shard_id)
+        return {"status": "ok", "ingested": len(data['events']), "shard": shard_id}
     return {"status": "error", "message": "No worker instance or invalid data"}
 
 
-# Global worker instance for data ingestion endpoint
+# Global worker instance
 _worker_instance: Optional[PassiveWorker] = None
 
 
@@ -506,13 +486,12 @@ def run_worker_loop():
 
     while True:
         try:
-            # Read new RFIs using consumer group
             streams = redis_client.xreadgroup(
                 GROUP_NAME,
                 CONSUMER_NAME,
                 {RFI_STREAM: ">"},
                 count=1,
-                block=2000  # 2 second timeout
+                block=2000
             )
 
             if streams:
@@ -520,7 +499,6 @@ def run_worker_loop():
                     for message_id, data in messages:
                         try:
                             worker.process_rfi(data)
-                            # Acknowledge successful processing
                             redis_client.xack(RFI_STREAM, GROUP_NAME, message_id)
                         except Exception as e:
                             logger.logger.error(f"Error processing RFI: {e}")
@@ -529,10 +507,35 @@ def run_worker_loop():
 
         except redis.exceptions.ConnectionError as e:
             logger.logger.error(f"Redis connection error: {e}")
-            time.sleep(5)  # Wait before reconnecting
+            time.sleep(5)
         except Exception as e:
             logger.logger.error(f"Worker loop error: {e}")
             time.sleep(1)
+
+
+# Utility functions for benchmark harness
+
+def get_ready_workers() -> int:
+    """Get count of ready workers."""
+    return redis_client.scard(WORKERS_READY_KEY)
+
+
+async def wait_for_workers(required_k: int, timeout: float = 30.0) -> bool:
+    """
+    Wait for required number of workers to be ready.
+    CRITICAL: All workers must be ready before benchmark execution begins.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        ready_count = redis_client.scard(WORKERS_READY_KEY)
+        if ready_count >= required_k:
+            logger.logger.info(f"All {required_k} workers ready, beginning benchmark execution")
+            return True
+        logger.logger.debug(f"Waiting for workers: {ready_count}/{required_k} ready")
+        await asyncio.sleep(1.0)
+
+    ready_count = redis_client.scard(WORKERS_READY_KEY)
+    raise RuntimeError(f"Only {ready_count}/{required_k} workers ready after {timeout}s")
 
 
 if __name__ == "__main__":

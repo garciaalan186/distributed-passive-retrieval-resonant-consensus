@@ -1,17 +1,23 @@
 import logging
 import json
-import xxhash
+import os
 from typing import Any, Dict, Optional
+import xxhash
 from pythonjsonlogger import jsonlogger
 from .models import LogEntry, ComponentType, EventType
-# Initialize Google Cloud Logging Client (optional)
-try:
-    from google.cloud import logging as google_logging
-    client = google_logging.Client()
-    client.setup_logging()
-except Exception:
-    # Fallback to standard logging if not on GCP or no creds
-    pass
+
+# Skip GCP logging entirely - use standard logging only
+# GCP logging can be enabled in production via environment variable
+_USE_GCP_LOGGING = os.getenv("USE_GCP_LOGGING", "false").lower() == "true"
+
+if _USE_GCP_LOGGING:
+    try:
+        from google.cloud import logging as google_logging
+        client = google_logging.Client()
+        client.setup_logging()
+    except Exception:
+        pass
+
 
 class DPRJSONFormatter(jsonlogger.JsonFormatter):
     def add_fields(self, log_record, record, message_dict):
@@ -25,6 +31,7 @@ class DPRJSONFormatter(jsonlogger.JsonFormatter):
         else:
             log_record['level'] = record.levelname
 
+
 def get_logger(name: str):
     logger = logging.getLogger(name)
     handler = logging.StreamHandler()
@@ -36,6 +43,7 @@ def get_logger(name: str):
     logger.propagate = False
     return logger
 
+
 class StructuredLogger:
     def __init__(self, component: ComponentType):
         self.logger = get_logger(component.value)
@@ -46,14 +54,14 @@ class StructuredLogger:
         dumped = json.dumps(payload, sort_keys=True, default=str)
         return xxhash.xxh64(dumped).hexdigest()
 
-    def log_event(self, 
-                  trace_id: str, 
-                  event_type: EventType, 
-                  payload: Any, 
+    def log_event(self,
+                  trace_id: str,
+                  event_type: EventType,
+                  payload: Any,
                   metrics: Dict[str, Any] = None):
-        
+
         payload_hash = self.hash_payload(payload)
-        
+
         entry = LogEntry(
             trace_id=trace_id,
             component=self.component,
@@ -62,6 +70,5 @@ class StructuredLogger:
             metrics=metrics or {},
             message=str(payload)[:200] # Log a snippet for debug
         )
-        
-        self.logger.info(json.dumps(entry.model_dump(), default=str))
 
+        self.logger.info(json.dumps(entry.model_dump(), default=str))
