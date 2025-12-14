@@ -4,10 +4,9 @@ import xxhash
 from typing import Any, Dict, Optional
 from pythonjsonlogger import jsonlogger
 from .models import LogEntry, ComponentType, EventType
-from google.cloud import logging as google_logging
-
-# Initialize Google Cloud Logging Client
+# Initialize Google Cloud Logging Client (optional)
 try:
+    from google.cloud import logging as google_logging
     client = google_logging.Client()
     client.setup_logging()
 except Exception:
