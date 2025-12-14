@@ -1,0 +1,58 @@
+{
+  "expected_consensus": [
+    "8ad19b16aeb0",
+    "6e86b9c67a81",
+    "24a8544a62a0",
+    "1ecbdd2d7f99",
+    "3e61af5fc020",
+    "abcecc4bc9d1",
+    "50b7932ed6fb",
+    "febb34366ceb",
+    "681c03c089c2",
+    "104a2e23ac89",
+    "fc6d937af36e"
+  ],
+  "expected_disputed": [
+    {
+      "claim_id": "ba8fdcc74255",
+      "perspective_views": {
+        "optimist": "Narbreemp Krinzinkrix will achieve Strangloursglom milestone by 2017 [optimist: ahead of schedule, Jolwel trending positive]",
+        "skeptic": "Narbreemp Krinzinkrix will achieve Strangloursglom milestone by 2017 [skeptic: delayed by Strangloursglom limitations]",
+        "methodologist": "Narbreemp Krinzinkrix will achieve Strangloursglom milestone by 2017 [methodologist: contingent on Kalvas standardization]",
+        "theorist": "Narbreemp Krinzinkrix will achieve Strangloursglom milestone by 2017 [theorist: depends on Striskzierdgleardthoun theoretical advances]",
+        "empiricist": "Narbreemp Krinzinkrix will achieve Strangloursglom milestone by 2017 [empiricist: based on current Jolwel extrapolation]"
+      }
+    },
+    {
+      "claim_id": "e857d5b44758",
+      "perspective_views": {
+        "optimist": "Narbreemp Krinzinkrix will achieve Thanstroungleast milestone by 2023 [optimist: ahead of schedule, Kalvas trending positive]",
+        "skeptic": "Narbreemp Krinzinkrix will achieve Thanstroungleast milestone by 2023 [skeptic: delayed by Zomspliersbeenkgloth limitations]",
+        "methodologist": "Narbreemp Krinzinkrix will achieve Thanstroungleast milestone by 2023 [methodologist: contingent on Kalvas standardization]",
+        "theorist": "Narbreemp Krinzinkrix will achieve Thanstroungleast milestone by 2023 [theorist: depends on Glirskooglonstreix theoretical advances]",
+        "empiricist": "Narbreemp Krinzinkrix will achieve Thanstroungleast milestone by 2023 [empiricist: based on current Kalvas extrapolation]"
+      }
+    },
+    {
+      "claim_id": "43f192b041e5",
+      "perspective_views": {
+        "optimist": "Narbreemp Krinzinkrix will achieve Stroursstran milestone by 2021 [optimist: ahead of schedule, Kalvas trending positive]",
+        "skeptic": "Narbreemp Krinzinkrix will achieve Stroursstran milestone by 2021 [skeptic: delayed by Zouxthounwierp limitations]",
+        "methodologist": "Narbreemp Krinzinkrix will achieve Stroursstran milestone by 2021 [methodologist: contingent on Kounkel standardization]",
+        "theorist": "Narbreemp Krinzinkrix will achieve Stroursstran milestone by 2021 [theorist: depends on Smirbglaurdkliezzors theoretical advances]",
+        "empiricist": "Narbreemp Krinzinkrix will achieve Stroursstran milestone by 2021 [empiricist: based on current Kounkel extrapolation]"
+      }
+    },
+    {
+      "claim_id": "7b21d3f452bc",
+      "perspective_views": {
+        "optimist": "Narbreemp Krinzinkrix will achieve Zouxthounwierp milestone by 2024 [optimist: ahead of schedule, Jolwel trending positive]",
+        "skeptic": "Narbreemp Krinzinkrix will achieve Zouxthounwierp milestone by 2024 [skeptic: delayed by Krounzeinsmearf limitations]",
+        "methodologist": "Narbreemp Krinzinkrix will achieve Zouxthounwierp milestone by 2024 [methodologist: contingent on Wanqueix standardization]",
+        "theorist": "Narbreemp Krinzinkrix will achieve Zouxthounwierp milestone by 2024 [theorist: depends on Whaishploordstrathglath theoretical advances]",
+        "empiricist": "Narbreemp Krinzinkrix will achieve Zouxthounwierp milestone by 2024 [empiricist: based on current Jolwel extrapolation]"
+      }
+    }
+  ],
+  "expected_sources": []
+}

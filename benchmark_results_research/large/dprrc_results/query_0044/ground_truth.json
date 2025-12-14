@@ -1,0 +1,48 @@
+{
+  "expected_consensus": [
+    "c15cb9c3537c",
+    "b7395f32b8e2",
+    "f2e51c61af72",
+    "1ed65cf1bb17",
+    "48322983099d",
+    "c098c3e2d3dc",
+    "e167eadc1e02",
+    "c54ac4983fbf",
+    "9428daecf081",
+    "6cc145b8ec19",
+    "265d4e2e13fa"
+  ],
+  "expected_disputed": [
+    {
+      "claim_id": "6e4716b65b28",
+      "perspective_views": {
+        "optimist": "Binper Zirskrafstreith will achieve Strothparn milestone by 2019 [optimist: ahead of schedule, Jeent trending positive]",
+        "skeptic": "Binper Zirskrafstreith will achieve Strothparn milestone by 2019 [skeptic: delayed by Virsvoum limitations]",
+        "methodologist": "Binper Zirskrafstreith will achieve Strothparn milestone by 2019 [methodologist: contingent on Men standardization]",
+        "theorist": "Binper Zirskrafstreith will achieve Strothparn milestone by 2019 [theorist: depends on Spakreim theoretical advances]",
+        "empiricist": "Binper Zirskrafstreith will achieve Strothparn milestone by 2019 [empiricist: based on current Men extrapolation]"
+      }
+    },
+    {
+      "claim_id": "66ae5fad9d1c",
+      "perspective_views": {
+        "optimist": "Binper Zirskrafstreith will achieve Glankrounzeim milestone by 2024 [optimist: ahead of schedule, Zietweirb trending positive]",
+        "skeptic": "Binper Zirskrafstreith will achieve Glankrounzeim milestone by 2024 [skeptic: delayed by Pleerlvox limitations]",
+        "methodologist": "Binper Zirskrafstreith will achieve Glankrounzeim milestone by 2024 [methodologist: contingent on Drourm standardization]",
+        "theorist": "Binper Zirskrafstreith will achieve Glankrounzeim milestone by 2024 [theorist: depends on Aitdrirpseelpkrath theoretical advances]",
+        "empiricist": "Binper Zirskrafstreith will achieve Glankrounzeim milestone by 2024 [empiricist: based on current Men extrapolation]"
+      }
+    },
+    {
+      "claim_id": "aaf7767dbb6d",
+      "perspective_views": {
+        "optimist": "Binper Zirskrafstreith will achieve Preikgraimstrouthkrin milestone by 2025 [optimist: ahead of schedule, Jeent trending positive]",
+        "skeptic": "Binper Zirskrafstreith will achieve Preikgraimstrouthkrin milestone by 2025 [skeptic: delayed by Rulpscieskmierlthath limitations]",
+        "methodologist": "Binper Zirskrafstreith will achieve Preikgraimstrouthkrin milestone by 2025 [methodologist: contingent on Jeent standardization]",
+        "theorist": "Binper Zirskrafstreith will achieve Preikgraimstrouthkrin milestone by 2025 [theorist: depends on Rulpscieskmierlthath theoretical advances]",
+        "empiricist": "Binper Zirskrafstreith will achieve Preikgraimstrouthkrin milestone by 2025 [empiricist: based on current Zietweirb extrapolation]"
+      }
+    }
+  ],
+  "expected_sources": []
+}

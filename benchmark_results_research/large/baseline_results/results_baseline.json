@@ -1,0 +1,618 @@
+[
+  {
+    "query_id": "query_0000",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 474.7263430001567,
+    "success": false
+  },
+  {
+    "query_id": "query_0001",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 300.8501230001457,
+    "success": false
+  },
+  {
+    "query_id": "query_0002",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 306.0699290001594,
+    "success": false
+  },
+  {
+    "query_id": "query_0003",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 293.6923460001708,
+    "success": false
+  },
+  {
+    "query_id": "query_0004",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 332.2256809999544,
+    "success": false
+  },
+  {
+    "query_id": "query_0005",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 314.37894999999116,
+    "success": false
+  },
+  {
+    "query_id": "query_0006",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 285.1306730001397,
+    "success": false
+  },
+  {
+    "query_id": "query_0007",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 313.73994499995206,
+    "success": false
+  },
+  {
+    "query_id": "query_0008",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 292.2064969998246,
+    "success": false
+  },
+  {
+    "query_id": "query_0009",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 283.37012999986655,
+    "success": false
+  },
+  {
+    "query_id": "query_0010",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 252.24029299988615,
+    "success": false
+  },
+  {
+    "query_id": "query_0011",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 316.63336999986313,
+    "success": false
+  },
+  {
+    "query_id": "query_0012",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 300.42028100001517,
+    "success": false
+  },
+  {
+    "query_id": "query_0013",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 293.549387999974,
+    "success": false
+  },
+  {
+    "query_id": "query_0014",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 293.27013000010993,
+    "success": false
+  },
+  {
+    "query_id": "query_0015",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 355.8715950000533,
+    "success": false
+  },
+  {
+    "query_id": "query_0016",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 307.2307769998588,
+    "success": false
+  },
+  {
+    "query_id": "query_0017",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 304.1732140000022,
+    "success": false
+  },
+  {
+    "query_id": "query_0018",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 293.07664499992825,
+    "success": false
+  },
+  {
+    "query_id": "query_0019",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 289.8068399999829,
+    "success": false
+  },
+  {
+    "query_id": "query_0020",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 275.58168599989585,
+    "success": false
+  },
+  {
+    "query_id": "query_0021",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 306.76298399998814,
+    "success": false
+  },
+  {
+    "query_id": "query_0022",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 286.58558200004336,
+    "success": false
+  },
+  {
+    "query_id": "query_0023",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 271.51337399982367,
+    "success": false
+  },
+  {
+    "query_id": "query_0024",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 302.6870730000155,
+    "success": false
+  },
+  {
+    "query_id": "query_0025",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 296.90569800004596,
+    "success": false
+  },
+  {
+    "query_id": "query_0026",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 291.8570060001002,
+    "success": false
+  },
+  {
+    "query_id": "query_0027",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 284.7651980000592,
+    "success": false
+  },
+  {
+    "query_id": "query_0028",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 314.6024249999755,
+    "success": false
+  },
+  {
+    "query_id": "query_0029",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 272.90976700010106,
+    "success": false
+  },
+  {
+    "query_id": "query_0030",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 249.69146800003728,
+    "success": false
+  },
+  {
+    "query_id": "query_0031",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 259.9342710000201,
+    "success": false
+  },
+  {
+    "query_id": "query_0032",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 307.54081700001734,
+    "success": false
+  },
+  {
+    "query_id": "query_0033",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 391.12688199998047,
+    "success": false
+  },
+  {
+    "query_id": "query_0034",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 289.1586060000009,
+    "success": false
+  },
+  {
+    "query_id": "query_0035",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 306.0282730000381,
+    "success": false
+  },
+  {
+    "query_id": "query_0036",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 299.99656099994354,
+    "success": false
+  },
+  {
+    "query_id": "query_0037",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 276.1411499998303,
+    "success": false
+  },
+  {
+    "query_id": "query_0038",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 311.96264499999415,
+    "success": false
+  },
+  {
+    "query_id": "query_0039",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 285.07248699997945,
+    "success": false
+  },
+  {
+    "query_id": "query_0040",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 307.8508020000754,
+    "success": false
+  },
+  {
+    "query_id": "query_0041",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 287.70531100008156,
+    "success": false
+  },
+  {
+    "query_id": "query_0042",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 282.0658699999967,
+    "success": false
+  },
+  {
+    "query_id": "query_0043",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 357.52823100006026,
+    "success": false
+  },
+  {
+    "query_id": "query_0044",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 408.4607899999355,
+    "success": false
+  },
+  {
+    "query_id": "query_0045",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 310.84808800005703,
+    "success": false
+  },
+  {
+    "query_id": "query_0046",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 283.13124499982223,
+    "success": false
+  },
+  {
+    "query_id": "query_0047",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 256.39692699996885,
+    "success": false
+  },
+  {
+    "query_id": "query_0048",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 261.45356699998956,
+    "success": false
+  },
+  {
+    "query_id": "query_0049",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 309.5005380000657,
+    "success": false
+  },
+  {
+    "query_id": "query_0050",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 386.27085799998895,
+    "success": false
+  },
+  {
+    "query_id": "query_0051",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 299.3681170000855,
+    "success": false
+  },
+  {
+    "query_id": "query_0052",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 298.58765200015114,
+    "success": false
+  },
+  {
+    "query_id": "query_0053",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 290.0062070000331,
+    "success": false
+  },
+  {
+    "query_id": "query_0054",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 302.08693999998104,
+    "success": false
+  },
+  {
+    "query_id": "query_0055",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 295.7601989999148,
+    "success": false
+  },
+  {
+    "query_id": "query_0056",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 284.6373790000598,
+    "success": false
+  },
+  {
+    "query_id": "query_0057",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 290.8270990001256,
+    "success": false
+  },
+  {
+    "query_id": "query_0058",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 253.65938599998117,
+    "success": false
+  },
+  {
+    "query_id": "query_0059",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 252.94546700001774,
+    "success": false
+  },
+  {
+    "query_id": "query_0060",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 308.2369399999152,
+    "success": false
+  },
+  {
+    "query_id": "query_0061",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 289.4258659998741,
+    "success": false
+  },
+  {
+    "query_id": "query_0062",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 322.8282200000194,
+    "success": false
+  },
+  {
+    "query_id": "query_0063",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 292.90934699997706,
+    "success": false
+  },
+  {
+    "query_id": "query_0064",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 265.49344199997904,
+    "success": false
+  },
+  {
+    "query_id": "query_0065",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 260.167236000143,
+    "success": false
+  },
+  {
+    "query_id": "query_0066",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 267.7089230001002,
+    "success": false
+  },
+  {
+    "query_id": "query_0067",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 304.6172479998859,
+    "success": false
+  },
+  {
+    "query_id": "query_0068",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 296.07371299994156,
+    "success": false
+  },
+  {
+    "query_id": "query_0069",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 385.81555199994,
+    "success": false
+  },
+  {
+    "query_id": "query_0070",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 304.215473000113,
+    "success": false
+  },
+  {
+    "query_id": "query_0071",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 294.12473699994734,
+    "success": false
+  },
+  {
+    "query_id": "query_0072",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 285.4014689999076,
+    "success": false
+  },
+  {
+    "query_id": "query_0073",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 301.54183500008,
+    "success": false
+  },
+  {
+    "query_id": "query_0074",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 305.22834099997453,
+    "success": false
+  },
+  {
+    "query_id": "query_0075",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 383.7253270000929,
+    "success": false
+  },
+  {
+    "query_id": "query_0076",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 336.67550499990284,
+    "success": false
+  },
+  {
+    "query_id": "query_0077",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 302.79217399993286,
+    "success": false
+  },
+  {
+    "query_id": "query_0078",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 290.91409600005136,
+    "success": false
+  },
+  {
+    "query_id": "query_0079",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 330.64469600003576,
+    "success": false
+  },
+  {
+    "query_id": "query_0080",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 303.2981580001888,
+    "success": false
+  },
+  {
+    "query_id": "query_0081",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 327.86702399994283,
+    "success": false
+  },
+  {
+    "query_id": "query_0082",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 303.12431600009404,
+    "success": false
+  },
+  {
+    "query_id": "query_0083",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 296.11138600012055,
+    "success": false
+  },
+  {
+    "query_id": "query_0084",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 307.89825900001233,
+    "success": false
+  },
+  {
+    "query_id": "query_0085",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 327.34089399991717,
+    "success": false
+  },
+  {
+    "query_id": "query_0086",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 290.3961779998099,
+    "success": false
+  },
+  {
+    "query_id": "query_0087",
+    "response": "",
+    "confidence": 0,
+    "latency_ms": 534.5592989999659,
+    "success": false
+  }
+]

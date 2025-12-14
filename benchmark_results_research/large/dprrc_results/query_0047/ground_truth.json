@@ -1,0 +1,48 @@
+{
+  "expected_consensus": [
+    "05604fdc0608",
+    "17df506d1d9d",
+    "3cf56f520b58",
+    "38483a2c0ef3",
+    "ae15898cff3c",
+    "617f9ea46f9a",
+    "ccb4389e67fa",
+    "1b2e0191bedf",
+    "9c9295ea05c0",
+    "6061e0b0109f",
+    "fab5faaa6223"
+  ],
+  "expected_disputed": [
+    {
+      "claim_id": "be2e86aec3ac",
+      "perspective_views": {
+        "optimist": "Titrut Zathzinlairk will achieve Scormkrith milestone by 2017 [optimist: ahead of schedule, Warkath trending positive]",
+        "skeptic": "Titrut Zathzinlairk will achieve Scormkrith milestone by 2017 [skeptic: delayed by Vixklopkrim limitations]",
+        "methodologist": "Titrut Zathzinlairk will achieve Scormkrith milestone by 2017 [methodologist: contingent on Jour standardization]",
+        "theorist": "Titrut Zathzinlairk will achieve Scormkrith milestone by 2017 [theorist: depends on Vixklopkrim theoretical advances]",
+        "empiricist": "Titrut Zathzinlairk will achieve Scormkrith milestone by 2017 [empiricist: based on current Kat extrapolation]"
+      }
+    },
+    {
+      "claim_id": "3330c57d27d5",
+      "perspective_views": {
+        "optimist": "Titrut Zathzinlairk will achieve Zomsperbswirkthin milestone by 2023 [optimist: ahead of schedule, Vol trending positive]",
+        "skeptic": "Titrut Zathzinlairk will achieve Zomsperbswirkthin milestone by 2023 [skeptic: delayed by Vixklopkrim limitations]",
+        "methodologist": "Titrut Zathzinlairk will achieve Zomsperbswirkthin milestone by 2023 [methodologist: contingent on Jour standardization]",
+        "theorist": "Titrut Zathzinlairk will achieve Zomsperbswirkthin milestone by 2023 [theorist: depends on Zomsperbswirkthin theoretical advances]",
+        "empiricist": "Titrut Zathzinlairk will achieve Zomsperbswirkthin milestone by 2023 [empiricist: based on current Warkath extrapolation]"
+      }
+    },
+    {
+      "claim_id": "59d986a526f1",
+      "perspective_views": {
+        "optimist": "Titrut Zathzinlairk will achieve Zomsperbswirkthin milestone by 2026 [optimist: ahead of schedule, Warkath trending positive]",
+        "skeptic": "Titrut Zathzinlairk will achieve Zomsperbswirkthin milestone by 2026 [skeptic: delayed by Krorsscelglox limitations]",
+        "methodologist": "Titrut Zathzinlairk will achieve Zomsperbswirkthin milestone by 2026 [methodologist: contingent on Vert standardization]",
+        "theorist": "Titrut Zathzinlairk will achieve Zomsperbswirkthin milestone by 2026 [theorist: depends on Strurggroondbrex theoretical advances]",
+        "empiricist": "Titrut Zathzinlairk will achieve Zomsperbswirkthin milestone by 2026 [empiricist: based on current Vert extrapolation]"
+      }
+    }
+  ],
+  "expected_sources": []
+}
