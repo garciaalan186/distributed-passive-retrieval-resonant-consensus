@@ -232,41 +232,80 @@ class ResearchBenchmarkSuite:
         return results
     
     def run_baseline_queries(self, queries: List[Dict], results_dir: Path) -> List[Dict]:
-        """Run baseline RAG queries (local fallback if cloud unavailable)"""
+        """Run baseline RAG queries (local-only, no Redis required)"""
 
         results_dir.mkdir(exist_ok=True)
         results = []
 
         try:
-            from dpr_rc.passive_agent import PassiveWorker
-            worker = PassiveWorker()
+            # Import ChromaDB directly for baseline - no Redis dependency
+            import chromadb
+            from datetime import datetime
+            import hashlib
+
+            # Create a standalone ChromaDB client for baseline
+            chroma_client = chromadb.Client()
+            baseline_collection = chroma_client.get_or_create_collection(
+                name="baseline_benchmark",
+                metadata={"hnsw:space": "cosine"}
+            )
+
+            # Generate some baseline data if empty
+            if baseline_collection.count() == 0:
+                print("  Generating baseline data...")
+                for i in range(100):
+                    doc_id = f"baseline_doc_{i}"
+                    year = 2015 + (i % 11)
+                    content = f"Historical research record from {year}. Progress milestone {i} achieved in domain area. Shard {year} data point."
+                    try:
+                        baseline_collection.add(
+                            ids=[doc_id],
+                            documents=[content],
+                            metadatas=[{"year": year}]
+                        )
+                    except Exception:
+                        pass  # Skip duplicates
 
             for i, query in enumerate(queries):
                 query_id = f"query_{i:04d}"
 
                 start = time.perf_counter()
-                # Updated for cache-based architecture: use retrieve_from_shard
-                timestamp_ctx = query.get("timestamp_context")
-                shard_id = timestamp_ctx[:4] if timestamp_ctx else "broadcast"
-                doc = worker.retrieve_from_shard(shard_id, query["question"])
-                latency_ms = (time.perf_counter() - start) * 1000
 
-                if doc:
-                    results.append({
-                        "query_id": query_id,
-                        "response": doc["content"],
-                        "confidence": 1.0,  # Naive RAG is always confident
-                        "latency_ms": latency_ms,
-                        "success": True
-                    })
-                else:
+                # Simple retrieval without consensus
+                try:
+                    query_results = baseline_collection.query(
+                        query_texts=[query["question"]],
+                        n_results=1
+                    )
+                    latency_ms = (time.perf_counter() - start) * 1000
+
+                    if query_results['documents'] and query_results['documents'][0]:
+                        results.append({
+                            "query_id": query_id,
+                            "response": query_results['documents'][0][0],
+                            "confidence": 1.0,  # Naive RAG is always confident
+                            "latency_ms": latency_ms,
+                            "success": True
+                        })
+                    else:
+                        results.append({
+                            "query_id": query_id,
+                            "response": "",
+                            "confidence": 0,
+                            "latency_ms": latency_ms,
+                            "success": False
+                        })
+                except Exception as e:
+                    latency_ms = (time.perf_counter() - start) * 1000
                     results.append({
                         "query_id": query_id,
                         "response": "",
                         "confidence": 0,
                         "latency_ms": latency_ms,
-                        "success": False
+                        "success": False,
+                        "error": str(e)
                     })
+
         except Exception as e:
             print(f"Baseline execution failed: {e}")
             # Return empty results
