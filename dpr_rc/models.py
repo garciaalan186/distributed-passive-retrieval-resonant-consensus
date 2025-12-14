@@ -44,3 +44,4 @@ class RetrievalResult(BaseModel):
     confidence: float
     status: str
     sources: List[str]
+    superposition: Optional[Dict[str, Any]] = None

@@ -48,6 +48,22 @@
       "baseline_hallucination_rate": 0.0,
       "dprrc_mean_latency_ms": 5283.792103249996,
       "baseline_mean_latency_ms": 0
+    },
+    {
+      "scale": "stress",
+      "config": {
+        "name": "stress",
+        "events_per_topic_per_year": 100,
+        "num_domains": 5
+      },
+      "dataset_size": 16500,
+      "query_count": 110,
+      "dprrc_accuracy": 0.0,
+      "baseline_accuracy": 0.0,
+      "dprrc_hallucination_rate": 1.0,
+      "baseline_hallucination_rate": 0.0,
+      "dprrc_mean_latency_ms": 5290.924907590907,
+      "baseline_mean_latency_ms": 0
     }
   ]
 }

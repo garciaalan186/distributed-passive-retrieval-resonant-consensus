@@ -1,0 +1,12 @@
+{
+  "expected_consensus": [],
+  "expected_disputed": [],
+  "expected_sources": [
+    "aa8679bf",
+    "78d1f2f1",
+    "5c9fb791",
+    "c9e33c1f",
+    "23fd17cc",
+    "fb0bc0fe"
+  ]
+}
