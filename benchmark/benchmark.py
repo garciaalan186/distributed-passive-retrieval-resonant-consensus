@@ -65,17 +65,20 @@ class BenchmarkSuite:
         # Instantiate a worker directly to use its storage/index
         from dpr_rc.passive_agent import PassiveWorker
         worker = PassiveWorker()
-        
-        # Important: The worker needs the documents indexed. 
+
+        # Important: The worker needs the documents indexed.
         # In this mock, the worker would usually retrieve from a shared collection.
         # Since we changed the data gen, we rely on the worker finding ANY match.
-        
+
         for q in queries:
             start = time.time()
             # Standard RAG: Retrieve top 1, no verification, no voting
-            doc = worker.retrieve(q["question"], q.get("timestamp_context"))
+            # Updated for cache-based architecture: use retrieve_from_shard
+            timestamp_ctx = q.get("timestamp_context")
+            shard_id = timestamp_ctx[:4] if timestamp_ctx else "broadcast"
+            doc = worker.retrieve_from_shard(shard_id, q["question"])
             latency = time.time() - start
-            
+
             if doc:
                 response = {
                     "final_answer": doc["content"],

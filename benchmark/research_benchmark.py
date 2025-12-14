@@ -233,21 +233,24 @@ class ResearchBenchmarkSuite:
     
     def run_baseline_queries(self, queries: List[Dict], results_dir: Path) -> List[Dict]:
         """Run baseline RAG queries (local fallback if cloud unavailable)"""
-        
+
         results_dir.mkdir(exist_ok=True)
         results = []
-        
+
         try:
             from dpr_rc.passive_agent import PassiveWorker
             worker = PassiveWorker()
-            
+
             for i, query in enumerate(queries):
                 query_id = f"query_{i:04d}"
-                
+
                 start = time.perf_counter()
-                doc = worker.retrieve(query["question"], query.get("timestamp_context"))
+                # Updated for cache-based architecture: use retrieve_from_shard
+                timestamp_ctx = query.get("timestamp_context")
+                shard_id = timestamp_ctx[:4] if timestamp_ctx else "broadcast"
+                doc = worker.retrieve_from_shard(shard_id, query["question"])
                 latency_ms = (time.perf_counter() - start) * 1000
-                
+
                 if doc:
                     results.append({
                         "query_id": query_id,
@@ -268,7 +271,7 @@ class ResearchBenchmarkSuite:
             print(f"Baseline execution failed: {e}")
             # Return empty results
             results = [{"query_id": f"query_{i:04d}", "success": False} for i in range(len(queries))]
-        
+
         self._save_json(results, results_dir / "results_baseline.json")
         return results
     
