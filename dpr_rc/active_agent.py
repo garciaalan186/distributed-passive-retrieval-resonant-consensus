@@ -3,6 +3,7 @@ import json
 import os
 import time
 from typing import List, Dict
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from redis import Redis
@@ -19,7 +20,6 @@ REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 RESPONSE_TIMEOUT = 5.0  # seconds to wait for votes
 
-app = FastAPI(title="DPR-ActiveController")
 logger = StructuredLogger(ComponentType.ACTIVE_CONTROLLER)
 redis_client = Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
@@ -27,14 +27,19 @@ redis_client = Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 RFI_STREAM = "dpr:rfi"
 VOTE_STREAM = "dpr:votes"
 
-@app.on_event("startup")
-async def startup_event():
-    # Create streams if not exist
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
     try:
         redis_client.xgroup_create(VOTE_STREAM, "controller_group", mkstream=True)
     except Exception:
-        pass # Group already exists
+        pass  # Group already exists
     logger.logger.info("Active Controller Started")
+    yield
+    # Shutdown (if needed)
+    logger.logger.info("Active Controller Shutting Down")
+
+app = FastAPI(title="DPR-ActiveController", lifespan=lifespan)
 
 class RouteLogic:
     @staticmethod
