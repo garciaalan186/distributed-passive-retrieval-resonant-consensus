@@ -1,17 +1,21 @@
 import logging
 import json
+import os
 import xxhash
 from typing import Any, Dict, Optional
 from pythonjsonlogger import jsonlogger
 from .models import LogEntry, ComponentType, EventType
+
 # Initialize Google Cloud Logging Client (optional)
-try:
-    from google.cloud import logging as google_logging
-    client = google_logging.Client()
-    client.setup_logging()
-except Exception:
-    # Fallback to standard logging if not on GCP or no creds
-    pass
+# Only attempt GCP logging if USE_GCP_LOGGING is set
+if os.getenv("USE_GCP_LOGGING", "").lower() in ("true", "1", "yes"):
+    try:
+        from google.cloud import logging as google_logging
+        client = google_logging.Client()
+        client.setup_logging()
+    except Exception:
+        # Fallback to standard logging if not on GCP or no creds
+        pass
 
 class DPRJSONFormatter(jsonlogger.JsonFormatter):
     def add_fields(self, log_record, record, message_dict):

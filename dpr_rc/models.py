@@ -45,3 +45,32 @@ class RetrievalResult(BaseModel):
     status: str
     sources: List[str]
     superposition: Optional[Dict[str, Any]] = None
+
+
+class ShardInfo(BaseModel):
+    """Information about a loaded shard"""
+    shard_id: str
+    document_count: int
+    embedding_model: Optional[str] = None
+    loaded_from: str  # "gcs_embeddings", "gcs_raw", "redis_cache", "fallback"
+
+
+class WorkerStatus(BaseModel):
+    """Status information for a passive worker"""
+    worker_id: str
+    epoch: str
+    mode: str  # "lazy_loading" or "eager_loading"
+    loaded_shards: List[ShardInfo]
+    bucket: Optional[str] = None
+    scale: Optional[str] = None
+    embedding_model: Optional[str] = None
+
+
+class EmbeddingInfo(BaseModel):
+    """Metadata about embeddings for a shard"""
+    model_id: str
+    dimension: int
+    num_documents: int
+    shard_id: str
+    created_at: str
+    checksum: str
