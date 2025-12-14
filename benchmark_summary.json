@@ -1,0 +1,53 @@
+{
+  "timestamp": 1765687221.0626419,
+  "scale_results": [
+    {
+      "scale": "small",
+      "config": {
+        "name": "small",
+        "events_per_topic_per_year": 10,
+        "num_domains": 2
+      },
+      "dataset_size": 660,
+      "query_count": 44,
+      "dprrc_accuracy": 0.0,
+      "baseline_accuracy": 0.0,
+      "dprrc_hallucination_rate": 1.0,
+      "baseline_hallucination_rate": 0.0,
+      "dprrc_mean_latency_ms": 5286.489803136362,
+      "baseline_mean_latency_ms": 0
+    },
+    {
+      "scale": "medium",
+      "config": {
+        "name": "medium",
+        "events_per_topic_per_year": 25,
+        "num_domains": 3
+      },
+      "dataset_size": 2475,
+      "query_count": 66,
+      "dprrc_accuracy": 0.0,
+      "baseline_accuracy": 0.0,
+      "dprrc_hallucination_rate": 1.0,
+      "baseline_hallucination_rate": 0.0,
+      "dprrc_mean_latency_ms": 5281.020076803033,
+      "baseline_mean_latency_ms": 0
+    },
+    {
+      "scale": "large",
+      "config": {
+        "name": "large",
+        "events_per_topic_per_year": 50,
+        "num_domains": 4
+      },
+      "dataset_size": 6600,
+      "query_count": 88,
+      "dprrc_accuracy": 0.0,
+      "baseline_accuracy": 0.0,
+      "dprrc_hallucination_rate": 1.0,
+      "baseline_hallucination_rate": 0.0,
+      "dprrc_mean_latency_ms": 5283.792103249996,
+      "baseline_mean_latency_ms": 0
+    }
+  ]
+}

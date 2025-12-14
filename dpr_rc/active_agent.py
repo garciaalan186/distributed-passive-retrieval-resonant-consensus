@@ -67,7 +67,7 @@ async def handle_query(request: QueryRequest):
     rfi_payload = {
         "trace_id": trace_id,
         "query_text": request.query_text,
-        "target_shards": target_shards,
+        "target_shards": json.dumps(target_shards),
         "timestamp_context": request.timestamp_context
     }
     redis_client.xadd(RFI_STREAM, rfi_payload)
@@ -110,31 +110,165 @@ async def handle_query(request: QueryRequest):
             sources=[]
         )
 
-    # Simple Consensus: Weighted Average of Confidence + Vector Center
-    # "Resonant Consensus" roughly means finding the cluster of highest agreement.
-    # We take the vote with highest confidence that is also supported by others.
+# ... imports ...
+from dataclasses import dataclass
+import numpy as np
+
+# Mocking FrozenAgentState for prototype (Architecture requirement)
+class FrozenAgentState:
+    def __init__(self, creation_time):
+        self.creation_time = creation_time
+
+    def verify(self, query: str, candidate: str) -> dict:
+        # Simulate temporal understanding evolution
+        # In a real system, this runs inference on the frozen model checkpoint
+        return {
+            "score": 0.9, # Mock high score
+            "prompt": f"Verify: {candidate}",
+            "response": "Consistent with 2020 knowledge",
+            "tokens": 10
+        }
+
+@dataclass
+class QuadrantClassification:
+    name: str
+    reasoning: str
+
+# ... existing code ...
+
+@app.post("/query", response_model=RetrievalResult)
+async def handle_query(request: QueryRequest):
+    trace_id = request.trace_id
+    logger.log_event(trace_id, EventType.SYSTEM_INIT, request.model_dump())
+
+    # 1. Broadcast RFI
+    target_shards = RouteLogic.get_target_shards(request)
+    rfi_payload = {
+        "trace_id": trace_id,
+        "query_text": request.query_text,
+        "target_shards": json.dumps(target_shards),
+        "timestamp_context": request.timestamp_context
+    }
+    redis_client.xadd(RFI_STREAM, rfi_payload)
     
-    best_vote = max(votes, key=lambda v: v.confidence_score)
+    # 2. Gather Votes (L2 + L3)
+    start_time = time.time()
+    votes: List[ConsensusVote] = []
+    pubsub = redis_client.pubsub()
+    pubsub.subscribe(f"dpr:responses:{trace_id}")
+
+    while (time.time() - start_time) < RESPONSE_TIMEOUT:
+        message = pubsub.get_message(ignore_subscribe_messages=True)
+        if message:
+            vote_data = json.loads(message['data'])
+            votes.append(ConsensusVote(**vote_data))
+            if len(votes) >= 3: # Min quorum
+                break
+        await asyncio.sleep(0.1)
+
+    if not votes:
+        return RetrievalResult(trace_id=trace_id, final_answer="", confidence=0.0, status="FAILED", sources=[])
+
+    # 3. Resonant Consensus Protocol (Architecture Phase L3)
+    # Classify candidates into Semantic Quadrants based on historical snapshots
     
-    # Calculate "Consensus Quadrant" (Average x,y)
-    avg_x = sum(v.semantic_quadrant[0] for v in votes) / len(votes)
-    avg_y = sum(v.semantic_quadrant[1] for v in votes) / len(votes)
+    # Group votes by content hash
+    unique_candidates = {}
+    for v in votes:
+        if v.content_hash not in unique_candidates:
+            unique_candidates[v.content_hash] = {
+                "content": v.content_snippet,
+                "votes": []
+            }
+        unique_candidates[v.content_hash]["votes"].append(v)
     
-    consensus_metrics = {
-        "vote_count": len(votes),
-        "consensus_quadrant": [avg_x, avg_y],
-        "agreement_score": 0.9 # Mock calculation
+    consensus_set = []
+    perspectival_set = []
+    
+    for chash, data in unique_candidates.items():
+        # Evaluate consensus strength
+        scores = [v.confidence_score for v in data["votes"]]
+        mean_score = np.mean(scores)
+        std_score = np.std(scores)
+        
+        # Quadrant Classification logic
+        if mean_score > 0.7 and std_score < 0.2:
+            quadrant = "SYMMETRIC_RESONANCE"
+            consensus_set.append(data["content"])
+        elif mean_score > 0.4: # Lower threshold to catch more perspectives
+            quadrant = "ASYMMETRIC"
+            perspectival_set.append({
+                "claim": data["content"],
+                "snapshot_views": {v.worker_id: v.confidence_score for v in data["votes"]},
+                "quadrant": quadrant,
+                "metrics": {"mean": mean_score, "std": std_score}
+            })
+        else:
+             quadrant = "DISSONANT_POLARIZATION"
+             # Still include significantly dissonant claims as perspectives if they have some support
+             if mean_score > 0.3:
+                 perspectival_set.append({
+                    "claim": data["content"],
+                    "snapshot_views": {v.worker_id: v.confidence_score for v in data["votes"]},
+                    "quadrant": quadrant,
+                    "metrics": {"mean": mean_score, "std": std_score}
+                })
+
+    # 4. Superposition Injection
+    # Always include both sets to allow A* to see the full semantic quadrant
+    superposition_object = {
+        "consensus_facts": consensus_set,
+        "perspectival_claims": perspectival_set
     }
     
+    # 5. Generate Response (A*)
+    # Construct prompt with superposition, explicitly instructing to present options under uncertainty
+    a_star_prompt = f"""You are answering a query using retrieved memories.
+
+CONSENSUS FACTS (strong agreement across historical versions):
+{json.dumps(consensus_set, indent=2)}
+
+EVOLVING/DIVERGENT PERSPECTIVES (varying agreement or evolution over time):
+{json.dumps(perspectival_set, indent=2)}
+
+QUERY: {request.query_text}
+
+Instructions:
+1. State any CONSENSUS FACTS as established knowledge.
+2. If there are DIVERGENT PERSPECTIVES or weak consensus, state your uncertainty clearly.
+3. Present the valid options/perspectives found in the provided data. Give context for each (e.g. "Some sources suggest X, while others indicate Y").
+4. If options conflict, present them as alternatives for the user to validate.
+5. Do not hallucinate information not present in the provided facts or perspectives.
+
+ANSWER:"""
+
+    # Mock A* generation logic for the benchmark
+    # In a real system this would call the LLM with a_star_prompt
+    
+    if consensus_set:
+        final_answer = " ".join(consensus_set)
+        if perspectival_set:
+            final_answer += "\n\nAdditionally, there are evolving perspectives: " + "; ".join([p['claim'] for p in perspectival_set])
+        confidence = 0.95
+    elif perspectival_set:
+        # Uncertainty case: Present options
+        options = [f"- {p['claim']} (Agreement: {p['metrics']['mean']:.2f})" for p in perspectival_set]
+        final_answer = f"The historical record is not unified on this. Here are the perspectives found:\n" + "\n".join(options)
+        confidence = 0.7 # Lower confidence due to lack of consensus, but non-zero because we have retrieval
+    else:
+         final_answer = "No relevant information found in the historical record."
+         confidence = 0.0
+
     logger.log_event(trace_id, EventType.CONSENSUS_REACHED, {
-        "selected_vote": best_vote.model_dump(),
-        "metrics": consensus_metrics
-    }, metrics=consensus_metrics)
+        "superposition": superposition_object,
+        "final_answer": final_answer,
+        "prompt": a_star_prompt
+    })
 
     return RetrievalResult(
         trace_id=trace_id,
-        final_answer=best_vote.content_snippet,
-        confidence=best_vote.confidence_score,
+        final_answer=final_answer,
+        confidence=confidence,
         status="SUCCESS",
         sources=[v.worker_id for v in votes]
     )

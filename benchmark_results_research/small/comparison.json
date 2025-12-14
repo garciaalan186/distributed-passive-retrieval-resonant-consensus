@@ -1,0 +1,326 @@
+{
+  "total_queries": 44,
+  "dprrc_correct_count": 0,
+  "baseline_correct_count": 0,
+  "dprrc_correct_rate": 0.0,
+  "baseline_correct_rate": 0.0,
+  "dprrc_hallucination_count": 44,
+  "baseline_hallucination_count": 0,
+  "dprrc_hallucination_rate": 1.0,
+  "baseline_hallucination_rate": 0.0,
+  "dprrc_mean_latency": 5286.489803136362,
+  "baseline_mean_latency": 0,
+  "dprrc_p95_latency": 5376.800296750025,
+  "baseline_p95_latency": 0,
+  "dprrc_hallucination_details": [
+    {
+      "query_id": "query_0000",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0001",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0002",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0003",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0004",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0005",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0006",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0007",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0008",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0009",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0010",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0011",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0012",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0013",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0014",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0015",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0016",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0017",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0018",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0019",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0020",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0021",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0022",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0023",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0024",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0025",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0026",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0027",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0028",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0029",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0030",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0031",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0032",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0033",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0034",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0035",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0036",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0037",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0038",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0039",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0040",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0041",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0042",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    },
+    {
+      "query_id": "query_0043",
+      "terms": [
+        "No"
+      ],
+      "context": "uncertain"
+    }
+  ],
+  "baseline_hallucination_details": []
+}

@@ -7,6 +7,9 @@ import torch
 import numpy as np
 import chromadb
 from typing import Dict, Any
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+import uvicorn
 
 from .models import (
     ComponentType, EventType, LogEntry, ConsensusVote
@@ -109,7 +112,29 @@ class PassiveWorker:
         
         logger.log_event(trace_id, EventType.VOTE_CAST, vote.model_dump(), metrics={"confidence": confidence})
 
-def main():
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+import uvicorn
+
+# ... imports ...
+
+app = FastAPI()
+
+@app.get("/")
+def health_check():
+    return {"status": "healthy", "worker_id": WORKER_ID}
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Start worker thread
+    worker_thread = threading.Thread(target=run_worker_loop, daemon=True)
+    worker_thread.start()
+    yield
+    # Shutdown
+
+app = FastAPI(lifespan=lifespan)
+
+def run_worker_loop():
     worker = PassiveWorker()
     
     # Initialize Stream Group
@@ -142,4 +167,5 @@ def main():
             time.sleep(1)
 
 if __name__ == "__main__":
-    main()
+    # Local run
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))

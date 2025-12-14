@@ -1,0 +1,38 @@
+{
+  "expected_consensus": [
+    "c15cb9c3537c",
+    "b7395f32b8e2",
+    "f2e51c61af72",
+    "1ed65cf1bb17",
+    "48322983099d",
+    "c098c3e2d3dc",
+    "e167eadc1e02",
+    "c54ac4983fbf",
+    "9428daecf081",
+    "6cc145b8ec19",
+    "265d4e2e13fa"
+  ],
+  "expected_disputed": [
+    {
+      "claim_id": "d338b0e44a42",
+      "perspective_views": {
+        "optimist": "Binper Zirskrafstreith will achieve Seistourszom milestone by 2020 [optimist: ahead of schedule, Maswas trending positive]",
+        "skeptic": "Binper Zirskrafstreith will achieve Seistourszom milestone by 2020 [skeptic: delayed by Kramzoursthothspraurk limitations]",
+        "methodologist": "Binper Zirskrafstreith will achieve Seistourszom milestone by 2020 [methodologist: contingent on Drourm standardization]",
+        "theorist": "Binper Zirskrafstreith will achieve Seistourszom milestone by 2020 [theorist: depends on Spakreim theoretical advances]",
+        "empiricist": "Binper Zirskrafstreith will achieve Seistourszom milestone by 2020 [empiricist: based on current Jeent extrapolation]"
+      }
+    },
+    {
+      "claim_id": "2eea80de55c8",
+      "perspective_views": {
+        "optimist": "Binper Zirskrafstreith will achieve Virsvoum milestone by 2028 [optimist: ahead of schedule, Zietweirb trending positive]",
+        "skeptic": "Binper Zirskrafstreith will achieve Virsvoum milestone by 2028 [skeptic: delayed by Pleerlvox limitations]",
+        "methodologist": "Binper Zirskrafstreith will achieve Virsvoum milestone by 2028 [methodologist: contingent on Jeent standardization]",
+        "theorist": "Binper Zirskrafstreith will achieve Virsvoum milestone by 2028 [theorist: depends on Aitdrirpseelpkrath theoretical advances]",
+        "empiricist": "Binper Zirskrafstreith will achieve Virsvoum milestone by 2028 [empiricist: based on current Jeent extrapolation]"
+      }
+    }
+  ],
+  "expected_sources": []
+}

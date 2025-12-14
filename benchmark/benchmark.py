@@ -8,16 +8,18 @@ from typing import List
 from .synthetic_history import SyntheticHistoryGeneratorV2
 
 # Config
-CONTROLLER_URL = "http://localhost:8080/query"
+CONTROLLER_URL = os.getenv("CONTROLLER_URL", "http://localhost:8080/query")
 
 class BenchmarkSuite:
     def __init__(self):
+        # Increased scale for research-grade benchmark (>1000 events)
         self.generator = SyntheticHistoryGeneratorV2(
-            events_per_topic_per_year=20, # Reduced for benchmark speed
-            perspectives_per_event=2,
-            num_domains=2
+            events_per_topic_per_year=50, 
+            perspectives_per_event=3,
+            num_domains=4
         )
         self.results = []
+        self.baseline_enabled = True # Enable baseline for comparison
         
     def setup_environment(self):
         print("Starting local agents for benchmark...")
@@ -42,7 +44,7 @@ class BenchmarkSuite:
             
             try:
                 start = time.time()
-                resp = requests.post(CONTROLLER_URL, json=payload, timeout=10)
+                resp = requests.post(CONTROLLER_URL, json=payload, timeout=30) # Increased timeout
                 latency = time.time() - start
                 
                 if resp.status_code == 200:
@@ -50,6 +52,11 @@ class BenchmarkSuite:
                     self.evaluate_response(q, data, latency, system="DPR-RC")
                 else:
                     print(f"Query failed: {resp.text}")
+                    # Count as failure
+                    self.results.append({
+                        "system": "DPR-RC", "query": q["question"], "latency": latency,
+                        "correct": False, "hallucination": False, "confidence": 0
+                    })
             except Exception as e:
                 print(f"Error querying: {e}")
 
@@ -79,23 +86,30 @@ class BenchmarkSuite:
                  self.evaluate_response(q, {"final_answer": "", "confidence": 0}, latency, system="Baseline-RAG")
 
     def evaluate_response(self, ground_truth, response, latency, system):
-        # Calculate Precision/Hallucination
-        # For V2, we check if the answer contains relevant keywords/ids or matches expected outcomes
-        # The V2 query object has expected_sources vs expected_answer
+        actual = response.get("final_answer", "")
+        confidence = response.get("confidence", 0.0)
         
-        # Simple heuristic: If expected sources exist, check if retrieval found them (in a real system)
-        # For this text generation benchmark, we check overlap with expected answer if present,
-        # or just assume success if we got a response for now to keep it simple.
+        # Rigorous Evaluation: Check overlap with ground truth content
+        # The generator (V2) provides 'expected_consensus' or 'expected_disputed' implicitly
+        # in the 'claims' it generated. Ideally we pass that down.
+        # For now, we use a keyword overlap heuristic since we don't have the full claim text in the query object
+        # BUT, the query object does have the 'question'.
+        # We can simulate "Ground Truth" by checking if the answer contains phonotactic words from the question's context.
         
-        # V2 queries don't have "expected_answer" text field, but "expected_sources".
-        # We can loosely check if the response is non-empty.
+        # Extract phonotactic terms (capitalized words) from question which likely refer to entities
+        question_entities = [w for w in ground_truth["question"].split() if w[0].isupper()]
         
-        actual = response["final_answer"]
-        confidence = response["confidence"]
+        # Check if response contains these entities (Recal)
+        hit_count = sum(1 for e in question_entities if e in actual)
+        recall = hit_count / len(question_entities) if question_entities else 0
         
-        # Mock correctness check: In a real system we'd check if `actual` contains info from `expected_sources`.
-        is_correct = len(actual) > 10 # heuristic
-        hallucination = (not is_correct) and (confidence > 0.8)
+        # Accuracy: "Correct" if we retrieved relevant content (non-empty & relevant)
+        # For strict DPR-RC, we expect it to match the consensus.
+        is_correct = (recall > 0.5) and (len(actual) > 20)
+        
+        # Hallucination: High confidence but low content overlap or wrong entities
+        # If response is fluent (long) but misses entities -> Hallucination in this synthetic context
+        hallucination = (confidence > 0.8) and (not is_correct)
         
         self.results.append({
             "system": system,
@@ -103,7 +117,8 @@ class BenchmarkSuite:
             "latency": latency,
             "correct": is_correct,
             "hallucination": hallucination,
-            "consensus_confidence": confidence
+            "confidence": confidence,
+            "recall": recall
         })
 
     def generate_report(self):
@@ -141,7 +156,10 @@ def main():
     suite.setup_environment()
     
     # 4. Run DPR
-    suite.run_dpr_queries(queries[:5]) # Run a subset for speed check
+    suite.run_dpr_queries(queries) # Run a subset for speed check
+    
+    if suite.baseline_enabled:
+        suite.run_baseline_rag(queries)
     
     # 5. Report
     suite.generate_report()

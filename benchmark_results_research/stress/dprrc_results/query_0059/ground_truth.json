@@ -1,0 +1,48 @@
+{
+  "expected_consensus": [
+    "35503e5ef457",
+    "d7d8b49565ec",
+    "55417a5d4c33",
+    "35b3287c543b",
+    "4ae47be57584",
+    "0cf1c352605b",
+    "24dda42161c0",
+    "ced9af020b3d",
+    "18bffe1bf04e",
+    "7a5d0ba47956",
+    "ec2a6a2a7e96"
+  ],
+  "expected_disputed": [
+    {
+      "claim_id": "20c2f25c877f",
+      "perspective_views": {
+        "optimist": "Berpend Streimausbreim will achieve Streixkrarsveirsthouth milestone by 2021 [optimist: ahead of schedule, Jat trending positive]",
+        "skeptic": "Berpend Streimausbreim will achieve Streixkrarsveirsthouth milestone by 2021 [skeptic: delayed by Kromthanzeinzix limitations]",
+        "methodologist": "Berpend Streimausbreim will achieve Streixkrarsveirsthouth milestone by 2021 [methodologist: contingent on Kos standardization]",
+        "theorist": "Berpend Streimausbreim will achieve Streixkrarsveirsthouth milestone by 2021 [theorist: depends on Vixliskkleantstram theoretical advances]",
+        "empiricist": "Berpend Streimausbreim will achieve Streixkrarsveirsthouth milestone by 2021 [empiricist: based on current Jat extrapolation]"
+      }
+    },
+    {
+      "claim_id": "d37ef2ef7e04",
+      "perspective_views": {
+        "optimist": "Berpend Streimausbreim will achieve Krinatthomfleelp milestone by 2021 [optimist: ahead of schedule, Gleesteerp trending positive]",
+        "skeptic": "Berpend Streimausbreim will achieve Krinatthomfleelp milestone by 2021 [skeptic: delayed by Kromthanzeinzix limitations]",
+        "methodologist": "Berpend Streimausbreim will achieve Krinatthomfleelp milestone by 2021 [methodologist: contingent on Kos standardization]",
+        "theorist": "Berpend Streimausbreim will achieve Krinatthomfleelp milestone by 2021 [theorist: depends on Kreixzoun theoretical advances]",
+        "empiricist": "Berpend Streimausbreim will achieve Krinatthomfleelp milestone by 2021 [empiricist: based on current Kos extrapolation]"
+      }
+    },
+    {
+      "claim_id": "59ecbd108be0",
+      "perspective_views": {
+        "optimist": "Berpend Streimausbreim will achieve Glounslounglounchux milestone by 2028 [optimist: ahead of schedule, Klurb trending positive]",
+        "skeptic": "Berpend Streimausbreim will achieve Glounslounglounchux milestone by 2028 [skeptic: delayed by Streixkrarsveirsthouth limitations]",
+        "methodologist": "Berpend Streimausbreim will achieve Glounslounglounchux milestone by 2028 [methodologist: contingent on Kos standardization]",
+        "theorist": "Berpend Streimausbreim will achieve Glounslounglounchux milestone by 2028 [theorist: depends on Kromthanzeinzix theoretical advances]",
+        "empiricist": "Berpend Streimausbreim will achieve Glounslounglounchux milestone by 2028 [empiricist: based on current Gleesteerp extrapolation]"
+      }
+    }
+  ],
+  "expected_sources": []
+}

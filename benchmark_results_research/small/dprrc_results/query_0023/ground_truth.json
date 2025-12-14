@@ -1,0 +1,68 @@
+{
+  "expected_consensus": [
+    "19d3f25e7a11",
+    "ff40514375ac",
+    "dbd78edd531d",
+    "4d9bfe4e73ae",
+    "2e8a49a48ea5",
+    "2a3db5d63e81",
+    "98c9bc096491",
+    "b6e03eebaad9",
+    "4538a1b0e746",
+    "cd2977a5b820",
+    "974d746fb2f5"
+  ],
+  "expected_disputed": [
+    {
+      "claim_id": "c2fc38f5fada",
+      "perspective_views": {
+        "optimist": "Heakrus Krarsthorspreex will achieve Koantpoomp milestone by 2019 [optimist: ahead of schedule, Vol trending positive]",
+        "skeptic": "Heakrus Krarsthorspreex will achieve Koantpoomp milestone by 2019 [skeptic: delayed by Krixzouthglixgrairs limitations]",
+        "methodologist": "Heakrus Krarsthorspreex will achieve Koantpoomp milestone by 2019 [methodologist: contingent on Kargirb standardization]",
+        "theorist": "Heakrus Krarsthorspreex will achieve Koantpoomp milestone by 2019 [theorist: depends on Varsaikskerg theoretical advances]",
+        "empiricist": "Heakrus Krarsthorspreex will achieve Koantpoomp milestone by 2019 [empiricist: based on current Weljar extrapolation]"
+      }
+    },
+    {
+      "claim_id": "837816ee668d",
+      "perspective_views": {
+        "optimist": "Heakrus Krarsthorspreex will achieve Zounstralpvin milestone by 2019 [optimist: ahead of schedule, Splaikvos trending positive]",
+        "skeptic": "Heakrus Krarsthorspreex will achieve Zounstralpvin milestone by 2019 [skeptic: delayed by Smearmbloupzanvox limitations]",
+        "methodologist": "Heakrus Krarsthorspreex will achieve Zounstralpvin milestone by 2019 [methodologist: contingent on Splaikvos standardization]",
+        "theorist": "Heakrus Krarsthorspreex will achieve Zounstralpvin milestone by 2019 [theorist: depends on Vomvoum theoretical advances]",
+        "empiricist": "Heakrus Krarsthorspreex will achieve Zounstralpvin milestone by 2019 [empiricist: based on current Weljar extrapolation]"
+      }
+    },
+    {
+      "claim_id": "ade02e741851",
+      "perspective_views": {
+        "optimist": "Heakrus Krarsthorspreex will achieve Vorsthom milestone by 2024 [optimist: ahead of schedule, Weljar trending positive]",
+        "skeptic": "Heakrus Krarsthorspreex will achieve Vorsthom milestone by 2024 [skeptic: delayed by Smaingkrouxbledglon limitations]",
+        "methodologist": "Heakrus Krarsthorspreex will achieve Vorsthom milestone by 2024 [methodologist: contingent on Weljar standardization]",
+        "theorist": "Heakrus Krarsthorspreex will achieve Vorsthom milestone by 2024 [theorist: depends on Koantpoomp theoretical advances]",
+        "empiricist": "Heakrus Krarsthorspreex will achieve Vorsthom milestone by 2024 [empiricist: based on current Vol extrapolation]"
+      }
+    },
+    {
+      "claim_id": "3fa729c33404",
+      "perspective_views": {
+        "optimist": "Heakrus Krarsthorspreex will achieve Krixzouthglixgrairs milestone by 2024 [optimist: ahead of schedule, Splaikvos trending positive]",
+        "skeptic": "Heakrus Krarsthorspreex will achieve Krixzouthglixgrairs milestone by 2024 [skeptic: delayed by Zounstralpvin limitations]",
+        "methodologist": "Heakrus Krarsthorspreex will achieve Krixzouthglixgrairs milestone by 2024 [methodologist: contingent on Weljar standardization]",
+        "theorist": "Heakrus Krarsthorspreex will achieve Krixzouthglixgrairs milestone by 2024 [theorist: depends on Smearmbloupzanvox theoretical advances]",
+        "empiricist": "Heakrus Krarsthorspreex will achieve Krixzouthglixgrairs milestone by 2024 [empiricist: based on current Vol extrapolation]"
+      }
+    },
+    {
+      "claim_id": "81030c8ea0e2",
+      "perspective_views": {
+        "optimist": "Heakrus Krarsthorspreex will achieve Vomvoum milestone by 2025 [optimist: ahead of schedule, Snaund trending positive]",
+        "skeptic": "Heakrus Krarsthorspreex will achieve Vomvoum milestone by 2025 [skeptic: delayed by Vorsthom limitations]",
+        "methodologist": "Heakrus Krarsthorspreex will achieve Vomvoum milestone by 2025 [methodologist: contingent on Kargirb standardization]",
+        "theorist": "Heakrus Krarsthorspreex will achieve Vomvoum milestone by 2025 [theorist: depends on Zonkran theoretical advances]",
+        "empiricist": "Heakrus Krarsthorspreex will achieve Vomvoum milestone by 2025 [empiricist: based on current Snaund extrapolation]"
+      }
+    }
+  ],
+  "expected_sources": []
+}

@@ -29,17 +29,33 @@ gcloud services enable \
 
 # 2. Storage Setup
 echo "Creating GCS Buckets..."
-gcloud storage buckets create gs://${BUCKET_NAME} --location=$REGION --uniform-bucket-level-access
-gcloud storage buckets create gs://${HISTORY_BUCKET_NAME} --location=$REGION --uniform-bucket-level-access
+gsutil mb -l $REGION gs://${BUCKET_NAME} || echo "Bucket ${BUCKET_NAME} may already exist."
+gsutil uniformbucketlevelaccess set on gs://${BUCKET_NAME} || echo "Setting UBLA failed or already set."
+
+gsutil mb -l $REGION gs://${HISTORY_BUCKET_NAME} || echo "Bucket ${HISTORY_BUCKET_NAME} may already exist."
+gsutil uniformbucketlevelaccess set on gs://${HISTORY_BUCKET_NAME} || echo "Setting UBLA failed or already set."
 
 # 3. Redis Setup (Messages & State)
 echo "Creating Cloud Memorystore for Redis..."
 gcloud redis instances create $REDIS_NAME \
     --size=1 \
     --region=$REGION \
-    --redis-version=redis_7_0 \
+    --redis-version=redis_6_x \
     --tier=basic \
-    --network=default
+    --network=default \
+    || echo "Redis instance $REDIS_NAME may already exist."
+
+# Wait for Redis to be READY
+echo "Waiting for Redis to be READY..."
+while true; do
+    STATE=$(gcloud redis instances describe $REDIS_NAME --region=$REGION --format="value(state)" 2>/dev/null || echo "UNKNOWN")
+    if [ "$STATE" = "READY" ]; then
+        echo "Redis is READY."
+        break
+    fi
+    echo "Redis state: $STATE. Waiting 10s..."
+    sleep 10
+done
 
 # Capture Redis Host/Port
 REDIS_HOST=$(gcloud redis instances describe $REDIS_NAME --region=$REGION --format="value(host)")
@@ -59,12 +75,14 @@ echo "Creating Artifact Registry..."
 gcloud artifacts repositories create $REPO_NAME \
     --repository-format=docker \
     --location=$REGION \
-    --description="DPR-RC Container Repository"
+    --description="DPR-RC Container Repository" \
+    || echo "Repository $REPO_NAME may already exist."
 
 # 5. IAM Setup
 echo "Creating Service Account..."
 gcloud iam service-accounts create $SERVICE_ACCOUNT \
-    --display-name="DPR RC Agent Service Account"
+    --display-name="DPR RC Agent Service Account" \
+    || echo "Service Account $SERVICE_ACCOUNT may already exist."
 
 SA_EMAIL="${SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com"
 
@@ -89,17 +107,17 @@ cat <<EOF > deploy_commands.sh
 #!/bin/bash
 # Deploy Active Controller
 gcloud run deploy dpr-active-controller \\
-    --image=${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/dpr-agent:latest \\
+    --image=gcr.io/${PROJECT_ID}/dpr-agent:latest \\
     --region=${REGION} \\
     --service-account=${SA_EMAIL} \\
-    --set-env-vars="REDIS_HOST=${REDIS_HOST},REDIS_PORT=${REDIS_PORT},LOG_BUCKET=${BUCKET_NAME},ROLE=active" \\
+    --set-env-vars="REDIS_HOST=${REDIS_HOST},REDIS_PORT=${REDIS_PORT},LOG_BUCKET=${BUCKET_NAME},ROLE=active,CONTROLLER_URL=http://localhost:8080/query" \\
     --vpc-connector=dpr-vpc-connector \\
     --vpc-egress=private-ranges-only \\
     --allow-unauthenticated
 
 # Deploy Passive Worker (Scale to 3 minimum for consensus)
 gcloud run deploy dpr-passive-worker \\
-    --image=${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/dpr-agent:latest \\
+    --image=gcr.io/${PROJECT_ID}/dpr-agent:latest \\
     --region=${REGION} \\
     --service-account=${SA_EMAIL} \\
     --set-env-vars="REDIS_HOST=${REDIS_HOST},REDIS_PORT=${REDIS_PORT},LOG_BUCKET=${BUCKET_NAME},ROLE=passive,HISTORY_BUCKET=${HISTORY_BUCKET_NAME}" \\

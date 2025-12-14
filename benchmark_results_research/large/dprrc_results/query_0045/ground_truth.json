@@ -1,0 +1,38 @@
+{
+  "expected_consensus": [
+    "19d3f25e7a11",
+    "ff40514375ac",
+    "dbd78edd531d",
+    "4d9bfe4e73ae",
+    "2e8a49a48ea5",
+    "2a3db5d63e81",
+    "98c9bc096491",
+    "b6e03eebaad9",
+    "4538a1b0e746",
+    "cd2977a5b820",
+    "974d746fb2f5"
+  ],
+  "expected_disputed": [
+    {
+      "claim_id": "a5b401ad1e67",
+      "perspective_views": {
+        "optimist": "Heakrus Krarsthorspreex will achieve Zounstralpvin milestone by 2028 [optimist: ahead of schedule, Splaikvos trending positive]",
+        "skeptic": "Heakrus Krarsthorspreex will achieve Zounstralpvin milestone by 2028 [skeptic: delayed by Soodsloudthoag limitations]",
+        "methodologist": "Heakrus Krarsthorspreex will achieve Zounstralpvin milestone by 2028 [methodologist: contingent on Kargirb standardization]",
+        "theorist": "Heakrus Krarsthorspreex will achieve Zounstralpvin milestone by 2028 [theorist: depends on Keanzeachnaulmjorg theoretical advances]",
+        "empiricist": "Heakrus Krarsthorspreex will achieve Zounstralpvin milestone by 2028 [empiricist: based on current Vol extrapolation]"
+      }
+    },
+    {
+      "claim_id": "489235d77064",
+      "perspective_views": {
+        "optimist": "Heakrus Krarsthorspreex will achieve Pliempthoun milestone by 2025 [optimist: ahead of schedule, Splaikvos trending positive]",
+        "skeptic": "Heakrus Krarsthorspreex will achieve Pliempthoun milestone by 2025 [skeptic: delayed by Vomvoum limitations]",
+        "methodologist": "Heakrus Krarsthorspreex will achieve Pliempthoun milestone by 2025 [methodologist: contingent on Kargirb standardization]",
+        "theorist": "Heakrus Krarsthorspreex will achieve Pliempthoun milestone by 2025 [theorist: depends on Pliempthoun theoretical advances]",
+        "empiricist": "Heakrus Krarsthorspreex will achieve Pliempthoun milestone by 2025 [empiricist: based on current Kargirb extrapolation]"
+      }
+    }
+  ],
+  "expected_sources": []
+}

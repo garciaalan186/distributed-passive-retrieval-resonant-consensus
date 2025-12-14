@@ -1,0 +1,58 @@
+{
+  "expected_consensus": [
+    "19d3f25e7a11",
+    "ff40514375ac",
+    "dbd78edd531d",
+    "4d9bfe4e73ae",
+    "2e8a49a48ea5",
+    "2a3db5d63e81",
+    "98c9bc096491",
+    "b6e03eebaad9",
+    "4538a1b0e746",
+    "cd2977a5b820",
+    "974d746fb2f5"
+  ],
+  "expected_disputed": [
+    {
+      "claim_id": "5170d5ff20a6",
+      "perspective_views": {
+        "optimist": "Heakrus Krarsthorspreex will achieve Krixzouthglixgrairs milestone by 2018 [optimist: ahead of schedule, Splaikvos trending positive]",
+        "skeptic": "Heakrus Krarsthorspreex will achieve Krixzouthglixgrairs milestone by 2018 [skeptic: delayed by Smaingkrouxbledglon limitations]",
+        "methodologist": "Heakrus Krarsthorspreex will achieve Krixzouthglixgrairs milestone by 2018 [methodologist: contingent on Vol standardization]",
+        "theorist": "Heakrus Krarsthorspreex will achieve Krixzouthglixgrairs milestone by 2018 [theorist: depends on Smaingkrouxbledglon theoretical advances]",
+        "empiricist": "Heakrus Krarsthorspreex will achieve Krixzouthglixgrairs milestone by 2018 [empiricist: based on current Snaund extrapolation]"
+      }
+    },
+    {
+      "claim_id": "413741ce3186",
+      "perspective_views": {
+        "optimist": "Heakrus Krarsthorspreex will achieve Sneistthon milestone by 2022 [optimist: ahead of schedule, Weljar trending positive]",
+        "skeptic": "Heakrus Krarsthorspreex will achieve Sneistthon milestone by 2022 [skeptic: delayed by Pliempthoun limitations]",
+        "methodologist": "Heakrus Krarsthorspreex will achieve Sneistthon milestone by 2022 [methodologist: contingent on Kargirb standardization]",
+        "theorist": "Heakrus Krarsthorspreex will achieve Sneistthon milestone by 2022 [theorist: depends on Soodsloudthoag theoretical advances]",
+        "empiricist": "Heakrus Krarsthorspreex will achieve Sneistthon milestone by 2022 [empiricist: based on current Weljar extrapolation]"
+      }
+    },
+    {
+      "claim_id": "2cc71b3db935",
+      "perspective_views": {
+        "optimist": "Heakrus Krarsthorspreex will achieve Varsaikskerg milestone by 2023 [optimist: ahead of schedule, Splaikvos trending positive]",
+        "skeptic": "Heakrus Krarsthorspreex will achieve Varsaikskerg milestone by 2023 [skeptic: delayed by Smaingkrouxbledglon limitations]",
+        "methodologist": "Heakrus Krarsthorspreex will achieve Varsaikskerg milestone by 2023 [methodologist: contingent on Vol standardization]",
+        "theorist": "Heakrus Krarsthorspreex will achieve Varsaikskerg milestone by 2023 [theorist: depends on Soodsloudthoag theoretical advances]",
+        "empiricist": "Heakrus Krarsthorspreex will achieve Varsaikskerg milestone by 2023 [empiricist: based on current Snaund extrapolation]"
+      }
+    },
+    {
+      "claim_id": "482f0eba4e8c",
+      "perspective_views": {
+        "optimist": "Heakrus Krarsthorspreex will achieve Sneistthon milestone by 2028 [optimist: ahead of schedule, Snaund trending positive]",
+        "skeptic": "Heakrus Krarsthorspreex will achieve Sneistthon milestone by 2028 [skeptic: delayed by Keanzeachnaulmjorg limitations]",
+        "methodologist": "Heakrus Krarsthorspreex will achieve Sneistthon milestone by 2028 [methodologist: contingent on Kargirb standardization]",
+        "theorist": "Heakrus Krarsthorspreex will achieve Sneistthon milestone by 2028 [theorist: depends on Vomvoum theoretical advances]",
+        "empiricist": "Heakrus Krarsthorspreex will achieve Sneistthon milestone by 2028 [empiricist: based on current Kargirb extrapolation]"
+      }
+    }
+  ],
+  "expected_sources": []
+}
