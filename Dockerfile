@@ -9,22 +9,9 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
-# We include torch and transformers for the local SLM, 
-# and redis/chromadb for core logic.
-RUN pip install --no-cache-dir \
-    google-cloud-storage \
-    google-cloud-logging \
-    redis \
-    chromadb \
-    pydantic \
-    numpy \
-    transformers \
-    torch \
-    accelerate \
-    fastapi \
-    uvicorn \
-    python-json-logger
+# Install Python dependencies from requirements.txt
+COPY requirements.txt /app/
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY dpr_rc/ /app/dpr_rc/
@@ -38,7 +25,7 @@ COPY <<EOF /app/entrypoint.sh
 #!/bin/bash
 if [ "\$ROLE" = "active" ]; then
     echo "Starting Active Agent Controller..."
-    exec uvicorn dpr_rc.active_agent:app --host 0.0.0.0 --port 8080
+    exec uvicorn dpr_rc.active_agent:app --host 0.0.0.0 --port \${PORT:-8080}
 elif [ "\$ROLE" = "passive" ]; then
     echo "Starting Passive Agent Worker..."
     exec python -m dpr_rc.passive_agent
@@ -51,3 +38,4 @@ EOF
 RUN chmod +x /app/entrypoint.sh
 
 CMD ["/app/entrypoint.sh"]
+
