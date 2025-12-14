@@ -62,6 +62,11 @@ class ResearchBenchmarkSuite:
         self.controller_url = os.getenv("CONTROLLER_URL", "http://localhost:8080/query")
         if not self.controller_url.endswith("/query"):
             self.controller_url = f"{self.controller_url.rstrip('/')}/query"
+
+        # Baseline URL - cloud service for fair comparison
+        self.baseline_url = os.getenv("BASELINE_URL", "")
+        if self.baseline_url and not self.baseline_url.endswith("/query"):
+            self.baseline_url = f"{self.baseline_url.rstrip('/')}/query"
         
     def run_full_benchmark(self):
         """Execute complete benchmark across all scale levels"""
@@ -232,31 +237,33 @@ class ResearchBenchmarkSuite:
         return results
     
     def run_baseline_queries(self, queries: List[Dict], results_dir: Path) -> List[Dict]:
-        """Run baseline RAG queries (local-only, no Redis required)"""
+        """Run baseline RAG queries - cloud if available, else local fallback"""
 
         results_dir.mkdir(exist_ok=True)
         results = []
 
-        try:
-            # Import ChromaDB directly for baseline - no Redis dependency
-            import chromadb
-            from datetime import datetime
-            import hashlib
+        # Use cloud baseline if URL is configured
+        if self.baseline_url:
+            print(f"  Using cloud baseline: {self.baseline_url}")
+            return self._run_cloud_baseline_queries(queries, results_dir)
 
-            # Create a standalone ChromaDB client for baseline
+        # Local fallback
+        print("  Using local baseline (no BASELINE_URL configured)")
+        try:
+            import chromadb
+
             chroma_client = chromadb.Client()
             baseline_collection = chroma_client.get_or_create_collection(
                 name="baseline_benchmark",
                 metadata={"hnsw:space": "cosine"}
             )
 
-            # Generate some baseline data if empty
             if baseline_collection.count() == 0:
                 print("  Generating baseline data...")
                 for i in range(100):
                     doc_id = f"baseline_doc_{i}"
                     year = 2015 + (i % 11)
-                    content = f"Historical research record from {year}. Progress milestone {i} achieved in domain area. Shard {year} data point."
+                    content = f"Historical research record from {year}. Progress milestone {i} achieved in domain area."
                     try:
                         baseline_collection.add(
                             ids=[doc_id],
@@ -264,14 +271,12 @@ class ResearchBenchmarkSuite:
                             metadatas=[{"year": year}]
                         )
                     except Exception:
-                        pass  # Skip duplicates
+                        pass
 
             for i, query in enumerate(queries):
                 query_id = f"query_{i:04d}"
-
                 start = time.perf_counter()
 
-                # Simple retrieval without consensus
                 try:
                     query_results = baseline_collection.query(
                         query_texts=[query["question"]],
@@ -283,7 +288,7 @@ class ResearchBenchmarkSuite:
                         results.append({
                             "query_id": query_id,
                             "response": query_results['documents'][0][0],
-                            "confidence": 1.0,  # Naive RAG is always confident
+                            "confidence": 1.0,
                             "latency_ms": latency_ms,
                             "success": True
                         })
@@ -308,8 +313,59 @@ class ResearchBenchmarkSuite:
 
         except Exception as e:
             print(f"Baseline execution failed: {e}")
-            # Return empty results
             results = [{"query_id": f"query_{i:04d}", "success": False} for i in range(len(queries))]
+
+        self._save_json(results, results_dir / "results_baseline.json")
+        return results
+
+    def _run_cloud_baseline_queries(self, queries: List[Dict], results_dir: Path) -> List[Dict]:
+        """Run baseline queries against cloud baseline service."""
+        results = []
+
+        for i, query in enumerate(queries):
+            query_id = f"query_{i:04d}"
+
+            try:
+                start = time.perf_counter()
+                response = requests.post(
+                    self.baseline_url,
+                    json={
+                        "query_text": query["question"],
+                        "timestamp_context": query.get("timestamp_context"),
+                        "trace_id": query_id
+                    },
+                    timeout=60
+                )
+                latency_ms = (time.perf_counter() - start) * 1000
+
+                if response.status_code == 200:
+                    data = response.json()
+                    results.append({
+                        "query_id": query_id,
+                        "response": data.get("final_answer", ""),
+                        "confidence": data.get("confidence", 1.0),
+                        "latency_ms": latency_ms,
+                        "success": True
+                    })
+                else:
+                    results.append({
+                        "query_id": query_id,
+                        "response": "",
+                        "confidence": 0,
+                        "latency_ms": latency_ms,
+                        "success": False,
+                        "error": response.text
+                    })
+
+            except Exception as e:
+                results.append({
+                    "query_id": query_id,
+                    "response": "",
+                    "confidence": 0,
+                    "latency_ms": 0,
+                    "success": False,
+                    "error": str(e)
+                })
 
         self._save_json(results, results_dir / "results_baseline.json")
         return results

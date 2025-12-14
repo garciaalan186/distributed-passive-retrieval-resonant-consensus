@@ -120,11 +120,19 @@ gcloud run deploy dpr-passive-worker \\
     --image=gcr.io/${PROJECT_ID}/dpr-agent:latest \\
     --region=${REGION} \\
     --service-account=${SA_EMAIL} \\
-    --set-env-vars="REDIS_HOST=${REDIS_HOST},REDIS_PORT=${REDIS_PORT},LOG_BUCKET=${BUCKET_NAME},ROLE=passive,HISTORY_BUCKET=${HISTORY_BUCKET_NAME}" \\
+    --set-env-vars="REDIS_HOST=${REDIS_HOST},REDIS_PORT=${REDIS_PORT},LOG_BUCKET=${BUCKET_NAME},ROLE=passive,HISTORY_BUCKET=${HISTORY_BUCKET_NAME},DATA_SCALE=medium" \\
     --vpc-connector=dpr-vpc-connector \\
     --vpc-egress=private-ranges-only \\
     --min-instances=3 \\
     --no-allow-unauthenticated
+
+# Deploy Baseline RAG (for fair cloud-to-cloud comparison)
+gcloud run deploy dpr-baseline-rag \\
+    --image=gcr.io/${PROJECT_ID}/dpr-agent:latest \\
+    --region=${REGION} \\
+    --service-account=${SA_EMAIL} \\
+    --set-env-vars="ROLE=baseline,HISTORY_BUCKET=${HISTORY_BUCKET_NAME},DATA_SCALE=medium" \\
+    --allow-unauthenticated
 EOF
 
 chmod +x deploy_commands.sh

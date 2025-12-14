@@ -41,6 +41,8 @@ REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 WORKER_ID = os.getenv("HOSTNAME", f"worker-{os.getpid()}")
 HISTORY_BUCKET = os.getenv("HISTORY_BUCKET", None)
+DATA_SCALE = os.getenv("DATA_SCALE", "medium")  # small, medium, large, stress
+DATA_PREFIX = "synthetic_history/v2"
 
 # TTLs for cache entries
 RESPONSE_TTL = 60  # seconds
@@ -117,13 +119,77 @@ class PassiveWorker:
         logger.logger.info(f"PassiveWorker {self.worker_id} initialized (shard-agnostic)")
 
     def _initialize_default_shards(self):
-        """Initialize default shards with fallback data for testing."""
+        """Initialize shards - load from GCS if available, else generate fallback."""
         default_shards = ["2019", "2020", "2021", "2022", "2023", "2024", "broadcast"]
 
+        # Try to load from GCS first
+        if HISTORY_BUCKET:
+            gcs_loaded = self._load_data_from_gcs()
+            if gcs_loaded:
+                logger.logger.info(f"Loaded data from GCS bucket: {HISTORY_BUCKET}")
+                return
+
+        # Fallback to generated data
         for shard_id in default_shards:
             collection = self._get_shard_collection(shard_id)
             if collection.count() == 0:
                 self._generate_fallback_data(shard_id, collection)
+
+    def _load_data_from_gcs(self) -> bool:
+        """Load synthetic history data from GCS bucket."""
+        try:
+            from google.cloud import storage
+            client = storage.Client()
+            bucket = client.bucket(HISTORY_BUCKET)
+
+            # List available shards for this scale
+            prefix = f"{DATA_PREFIX}/{DATA_SCALE}/shards/"
+            blobs = list(bucket.list_blobs(prefix=prefix))
+
+            if not blobs:
+                logger.logger.warning(f"No shard data found in gs://{HISTORY_BUCKET}/{prefix}")
+                return False
+
+            loaded_count = 0
+            for blob in blobs:
+                if blob.name.endswith('.json'):
+                    # Extract shard_id from filename (e.g., shard_2020.json -> 2020)
+                    filename = blob.name.split('/')[-1]
+                    shard_id = filename.replace('shard_', '').replace('.json', '')
+
+                    # Download and parse
+                    content = blob.download_as_text()
+                    events = json.loads(content)
+
+                    # Get collection and ingest
+                    collection = self._get_shard_collection(shard_id)
+                    if collection.count() == 0:
+                        docs = [
+                            {
+                                "id": event.get('id', hashlib.md5(event['content'].encode()).hexdigest()[:12]),
+                                "content": event['content'],
+                                "metadata": {
+                                    "timestamp": event.get('timestamp', ''),
+                                    "topic": event.get('topic', ''),
+                                    "event_type": event.get('event_type', ''),
+                                    "perspective": event.get('perspective', '')
+                                }
+                            }
+                            for event in events
+                        ]
+                        self._bulk_insert(docs, collection)
+                        loaded_count += len(docs)
+                        logger.logger.info(f"Loaded {len(docs)} events into shard {shard_id}")
+
+            logger.logger.info(f"GCS data load complete: {loaded_count} total documents")
+            return loaded_count > 0
+
+        except ImportError:
+            logger.logger.warning("google-cloud-storage not installed, skipping GCS load")
+            return False
+        except Exception as e:
+            logger.logger.warning(f"Failed to load from GCS: {e}")
+            return False
 
     def _get_shard_collection(self, shard_id: str):
         """
