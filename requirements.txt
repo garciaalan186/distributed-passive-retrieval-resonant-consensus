@@ -1,0 +1,13 @@
+google-cloud-storage==2.14.0
+google-cloud-logging==3.9.0
+redis==5.0.1
+chromadb==0.4.22
+pydantic==2.5.3
+numpy==1.26.3
+transformers==4.36.2
+torch==2.1.2
+accelerate==0.25.0
+fastapi==0.109.0
+uvicorn==0.27.0
+python-json-logger==2.0.7
+xxhash==3.4.1
