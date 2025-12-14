@@ -2,15 +2,17 @@ import asyncio
 import json
 import os
 import time
+import math
 from typing import List, Dict
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from redis import Redis
 import uuid
 
 from .models import (
-    QueryRequest, LogEntry, ComponentType, EventType, 
+    QueryRequest, LogEntry, ComponentType, EventType,
     ConsensusVote, RetrievalResult
 )
 from .logging_utils import StructuredLogger
@@ -18,7 +20,8 @@ from .logging_utils import StructuredLogger
 # Configuration
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-RESPONSE_TIMEOUT = 5.0  # seconds to wait for votes
+RESPONSE_TIMEOUT = float(os.getenv("RESPONSE_TIMEOUT", "5.0"))  # seconds to wait for votes
+MIN_VOTES_FOR_CONSENSUS = int(os.getenv("MIN_VOTES", "1"))  # Minimum votes needed
 
 logger = StructuredLogger(ComponentType.ACTIVE_CONTROLLER)
 redis_client = Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
@@ -27,8 +30,10 @@ redis_client = Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 RFI_STREAM = "dpr:rfi"
 VOTE_STREAM = "dpr:votes"
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Lifespan context manager for FastAPI startup/shutdown"""
     # Startup
     try:
         redis_client.xgroup_create(VOTE_STREAM, "controller_group", mkstream=True)
@@ -36,73 +41,154 @@ async def lifespan(app: FastAPI):
         pass  # Group already exists
     logger.logger.info("Active Controller Started")
     yield
-    # Shutdown (if needed)
+    # Shutdown
     logger.logger.info("Active Controller Shutting Down")
+
 
 app = FastAPI(title="DPR-ActiveController", lifespan=lifespan)
 
+
 class RouteLogic:
+    """L1 Time-Sharded Routing Logic per DPR Architecture Spec Section 3.1.1"""
+
     @staticmethod
     def get_target_shards(query: QueryRequest) -> List[str]:
-        # L1 Time-Sharded Routing
-        # Simple implementation: Hash based or keyword based.
-        # For this artifact, we broadcast to all ("*") but log the targeting logic.
+        """
+        Determine target shards based on timestamp context.
+        Per spec: "The Central Index is partitioned into Time-Based Shards"
+        """
         if query.timestamp_context:
             # Deterministic sharding logic based on year
             year = query.timestamp_context[:4]
             return [f"shard_{year}"]
         return ["broadcast"]
 
+
+# Per spec Section 2.1: "Passive Agent (P) - A serverless worker representing
+# a frozen snapshot of history"
+@dataclass
+class FrozenAgentState:
+    """
+    Represents a frozen snapshot of A* at a specific point in time.
+    Per Mathematical Model Section 4.2: "Each historical agent A_k represents
+    a frozen snapshot of the context state from a previous time step."
+    """
+    creation_time: str
+
+    def verify(self, query: str, candidate: str) -> dict:
+        """
+        Simulate temporal understanding verification.
+        In production, this runs inference on the frozen model checkpoint.
+        """
+        return {
+            "score": 0.9,
+            "prompt": f"Verify: {candidate}",
+            "response": f"Consistent with {self.creation_time} knowledge",
+            "tokens": 10
+        }
+
+
+@dataclass
+class QuadrantClassification:
+    """Classification result for Semantic Quadrant Topology"""
+    name: str
+    reasoning: str
+
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy", "component": "active_controller"}
+
+
 @app.post("/query", response_model=RetrievalResult)
 async def handle_query(request: QueryRequest):
+    """
+    Main query handler implementing the DPR Protocol (Spec Section 4).
+
+    Flow:
+    1. Gap Detection & Routing (L1)
+    2. SUBSCRIBE to response channel BEFORE broadcast (CRITICAL - fixes race condition)
+    3. Targeted RFI Broadcast
+    4. Gather Votes (L2 Verification results)
+    5. Resonant Consensus (L3)
+    6. Superposition Injection
+    """
     trace_id = request.trace_id
-    
-    # 1. Log Query Reception
     logger.log_event(trace_id, EventType.SYSTEM_INIT, request.model_dump())
 
+    pubsub = None
     try:
-        # 2. Routing
+        # 1. L1 Routing - Determine target shards
         target_shards = RouteLogic.get_target_shards(request)
-        
-        # 3. Broadcast RFI (Request for Information) to Redis
-        rfi_payload = {
-            "trace_id": trace_id,
-            "query_text": request.query_text,
-            "target_shards": json.dumps(target_shards),
-            "timestamp_context": request.timestamp_context
-        }
-        redis_client.xadd(RFI_STREAM, rfi_payload)
-        logger.log_event(trace_id, EventType.RFI_BROADCAST, rfi_payload)
 
-        # 4. Wait for Consensus (Gather Votes)
-        # in a real system we might use async pub/sub or a separate worker for aggregation.
-        # For this benchmark API, we block/poll for a short window.
-        start_time = time.time()
-        votes: List[ConsensusVote] = []
-        
-        # We consume from the VOTE_STREAM looking for our trace_id
-        # Note: In high throughput, this polling is inefficient. 
-        # Better: Use a specific response channel per trace_id.
-        # Implementation: Subscribe to a channel `dpr:responses:{trace_id}`
-        
+        # 2. CRITICAL FIX: Subscribe to response channel BEFORE broadcasting RFI
+        # Per Redis Pub/Sub semantics, messages are NOT queued for late subscribers.
+        # We must subscribe first to ensure we don't miss any votes.
         pubsub = redis_client.pubsub()
         response_channel = f"dpr:responses:{trace_id}"
         pubsub.subscribe(response_channel)
 
+        # Small delay to ensure subscription is fully active
+        await asyncio.sleep(0.05)
+
+        # 3. Broadcast RFI (Request for Information) to Redis Stream
+        # Per Spec Section 4.2: "A* publishes an RFI message to Redis"
+        rfi_payload = {
+            "trace_id": trace_id,
+            "query_text": request.query_text,
+            "target_shards": json.dumps(target_shards),
+            "timestamp_context": request.timestamp_context or ""
+        }
+        redis_client.xadd(RFI_STREAM, rfi_payload)
+        logger.log_event(trace_id, EventType.RFI_BROADCAST, rfi_payload)
+
+        # 4. Gather Votes (L2 + L3) - Wait for Passive Agent responses
+        # Per Spec Section 4.3: "Targeted Passive Agents wake up and ingest the query"
+        start_time = time.time()
+        votes: List[ConsensusVote] = []
+
         while (time.time() - start_time) < RESPONSE_TIMEOUT:
             message = pubsub.get_message(ignore_subscribe_messages=True)
-            if message:
-                vote_data = json.loads(message['data'])
-                vote = ConsensusVote(**vote_data)
-                votes.append(vote)
-                # Break if we have enough votes? (e.g. 3)
-                if len(votes) >= 3:
-                    break
-            await asyncio.sleep(0.1)
+            if message and message.get('data'):
+                try:
+                    # Handle both string and bytes data
+                    data = message['data']
+                    if isinstance(data, bytes):
+                        data = data.decode('utf-8')
+                    vote_data = json.loads(data)
+                    votes.append(ConsensusVote(**vote_data))
 
-        # 5. Calculate Consensus (Resonant verification)
+                    # Check if we have minimum quorum
+                    if len(votes) >= MIN_VOTES_FOR_CONSENSUS:
+                        # Wait a bit more for additional votes
+                        await asyncio.sleep(0.3)
+                        # Drain any remaining messages
+                        while True:
+                            msg = pubsub.get_message(ignore_subscribe_messages=True)
+                            if not msg or not msg.get('data'):
+                                break
+                            try:
+                                d = msg['data']
+                                if isinstance(d, bytes):
+                                    d = d.decode('utf-8')
+                                votes.append(ConsensusVote(**json.loads(d)))
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+                        break
+                except (json.JSONDecodeError, TypeError) as e:
+                    logger.logger.warning(f"Failed to parse vote: {e}")
+            await asyncio.sleep(0.05)
+
+        # Cleanup subscription
+        pubsub.unsubscribe(response_channel)
+        pubsub.close()
+        pubsub = None
+
+        # Handle no votes case
         if not votes:
-            logger.log_event(trace_id, EventType.HALLUCINATION_DETECTED, {"reason": "No votes received"})
+            logger.log_event(trace_id, EventType.HALLUCINATION_DETECTED,
+                           {"reason": "No votes received"})
             return RetrievalResult(
                 trace_id=trace_id,
                 final_answer="No consensus reached.",
@@ -110,76 +196,12 @@ async def handle_query(request: QueryRequest):
                 status="FAILED",
                 sources=[]
             )
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise e
 
-# ... imports ...
-from dataclasses import dataclass
-import numpy as np
+        # 5. Resonant Consensus Protocol (L3) - Per Spec Section 4.4
+        # "Instead of returning the single best answer, the system enters a Consensus Phase"
 
-# Mocking FrozenAgentState for prototype (Architecture requirement)
-class FrozenAgentState:
-    def __init__(self, creation_time):
-        self.creation_time = creation_time
-
-    def verify(self, query: str, candidate: str) -> dict:
-        # Simulate temporal understanding evolution
-        # In a real system, this runs inference on the frozen model checkpoint
-        return {
-            "score": 0.9, # Mock high score
-            "prompt": f"Verify: {candidate}",
-            "response": "Consistent with 2020 knowledge",
-            "tokens": 10
-        }
-
-@dataclass
-class QuadrantClassification:
-    name: str
-    reasoning: str
-
-# ... existing code ...
-
-@app.post("/query", response_model=RetrievalResult)
-async def handle_query(request: QueryRequest):
-    trace_id = request.trace_id
-    logger.log_event(trace_id, EventType.SYSTEM_INIT, request.model_dump())
-
-    try:
-        # 1. Broadcast RFI
-        target_shards = RouteLogic.get_target_shards(request)
-        rfi_payload = {
-            "trace_id": trace_id,
-            "query_text": request.query_text,
-            "target_shards": json.dumps(target_shards),
-            "timestamp_context": request.timestamp_context
-        }
-        redis_client.xadd(RFI_STREAM, rfi_payload)
-        
-        # 2. Gather Votes (L2 + L3)
-        start_time = time.time()
-        votes: List[ConsensusVote] = []
-        pubsub = redis_client.pubsub()
-        pubsub.subscribe(f"dpr:responses:{trace_id}")
-
-        while (time.time() - start_time) < RESPONSE_TIMEOUT:
-            message = pubsub.get_message(ignore_subscribe_messages=True)
-            if message:
-                vote_data = json.loads(message['data'])
-                votes.append(ConsensusVote(**vote_data))
-                if len(votes) >= 3: # Min quorum
-                    break
-            await asyncio.sleep(0.1)
-
-        if not votes:
-            return RetrievalResult(trace_id=trace_id, final_answer="", confidence=0.0, status="FAILED", sources=[])
-
-        # 3. Resonant Consensus Protocol (Architecture Phase L3)
-        # Classify candidates into Semantic Quadrants based on historical snapshots
-        
-        # Group votes by content hash
-        unique_candidates = {}
+        # Group votes by content hash (same content = same claim)
+        unique_candidates: Dict[str, Dict] = {}
         for v in votes:
             if v.content_hash not in unique_candidates:
                 unique_candidates[v.content_hash] = {
@@ -187,101 +209,84 @@ async def handle_query(request: QueryRequest):
                     "votes": []
                 }
             unique_candidates[v.content_hash]["votes"].append(v)
-        
+
+        # Classify into Semantic Quadrants per Mathematical Model Section 6.2
+        # Symmetric Resonance (Consensus): v+ > 0 ∧ v- > 0 - high agreement
+        # Asymmetry (Perspective): partial truth valid from specific perspectives
         consensus_set = []
         perspectival_set = []
-        
-        import math
-        
+
         for chash, data in unique_candidates.items():
-            # Evaluate consensus strength
             scores = [v.confidence_score for v in data["votes"]]
+            vote_count = len(scores)
+
             if not scores:
-                mean_score = 0.0
-                std_score = 0.0
-            else:
-                mean_score = sum(scores) / len(scores)
-                variance = sum((x - mean_score) ** 2 for x in scores) / len(scores)
-                std_score = math.sqrt(variance)
-            
-            # Quadrant Classification logic
+                continue
+
+            mean_score = sum(scores) / len(scores)
+            variance = sum((x - mean_score) ** 2 for x in scores) / len(scores)
+            std_score = math.sqrt(variance)
+
+            # Quadrant Classification per spec
+            # High mean + low std = strong consensus (Symmetric Resonance)
+            # Per Mathematical Model: "High-entropy bridge concepts agreed upon by diverse contexts"
             if mean_score > 0.7 and std_score < 0.2:
                 quadrant = "SYMMETRIC_RESONANCE"
                 consensus_set.append(data["content"])
-            elif mean_score > 0.4: # Lower threshold to catch more perspectives
+            elif mean_score > 0.4:
                 quadrant = "ASYMMETRIC"
                 perspectival_set.append({
                     "claim": data["content"],
                     "snapshot_views": {v.worker_id: v.confidence_score for v in data["votes"]},
                     "quadrant": quadrant,
-                    "metrics": {"mean": mean_score, "std": std_score}
+                    "metrics": {"mean": mean_score, "std": std_score, "vote_count": vote_count}
                 })
             else:
                 quadrant = "DISSONANT_POLARIZATION"
-                # Still include significantly dissonant claims as perspectives if they have some support
+                # Include significantly dissonant claims as perspectives if they have some support
                 if mean_score > 0.3:
                     perspectival_set.append({
                         "claim": data["content"],
                         "snapshot_views": {v.worker_id: v.confidence_score for v in data["votes"]},
                         "quadrant": quadrant,
-                        "metrics": {"mean": mean_score, "std": std_score}
+                        "metrics": {"mean": mean_score, "std": std_score, "vote_count": vote_count}
                     })
 
-        # 4. Superposition Injection
-        # Always include both sets to allow A* to see the full semantic quadrant
+        # 6. Superposition Injection - Per Spec Section 4.5
+        # "A* injects a Superposition Object into its context, containing both
+        # the Consensus Truth and distinct Perspectives"
         superposition_object = {
             "consensus_facts": consensus_set,
             "perspectival_claims": perspectival_set
         }
-        
-        # 5. Generate Response (A*)
-        # Construct prompt with superposition, explicitly instructing to present options under uncertainty
-        a_star_prompt = f"""You are answering a query using retrieved memories.
 
-CONSENSUS FACTS (strong agreement across historical versions):
-{json.dumps(consensus_set, indent=2)}
-
-EVOLVING/DIVERGENT PERSPECTIVES (varying agreement or evolution over time):
-{json.dumps(perspectival_set, indent=2)}
-
-QUERY: {request.query_text}
-
-Instructions:
-1. State any CONSENSUS FACTS as established knowledge.
-2. If there are DIVERGENT PERSPECTIVES or weak consensus, state your uncertainty clearly.
-3. Present the valid options/perspectives found in the provided data. Give context for each (e.g. "Some sources suggest X, while others indicate Y").
-4. If options conflict, present them as alternatives for the user to validate.
-5. Do not hallucinate information not present in the provided facts or perspectives.
-
-ANSWER:"""
-
-        # Mock A* generation logic for the benchmark
-        # In a real system this would call the LLM with a_star_prompt
-        
+        # Generate Response (A*) - Construct answer from superposition
         if consensus_set:
             final_answer = " ".join(consensus_set)
             if perspectival_set:
-                final_answer += "\n\nAdditionally, there are evolving perspectives: " + "; ".join([p['claim'] for p in perspectival_set])
+                final_answer += "\n\nAdditionally, there are evolving perspectives: " + \
+                               "; ".join([p['claim'] for p in perspectival_set])
             confidence = 0.95
         elif perspectival_set:
-            # Uncertainty case: Present options
-            options = [f"- {p['claim']} (Agreement: {p['metrics']['mean']:.2f})" for p in perspectival_set]
-            final_answer = f"The historical record is not unified on this. Here are the perspectives found:\n" + "\n".join(options)
-            confidence = 0.7 # Lower confidence due to lack of consensus, but non-zero because we have retrieval
+            # Uncertainty case: Present options per spec
+            # "allows A* to generate a nuanced reply acknowledging both the agreed facts
+            # and the conflicting perspectives"
+            options = [f"- {p['claim']} (Agreement: {p['metrics']['mean']:.2f})"
+                      for p in perspectival_set]
+            final_answer = "The historical record shows varying perspectives:\n" + "\n".join(options)
+            confidence = 0.7
         else:
             final_answer = "No relevant information found in the historical record."
             confidence = 0.0
 
         logger.log_event(trace_id, EventType.CONSENSUS_REACHED, {
             "superposition": superposition_object,
-            "final_answer": final_answer,
-            "prompt": a_star_prompt
+            "final_answer": final_answer[:200],
+            "num_votes": len(votes),
+            "num_consensus": len(consensus_set),
+            "num_perspectival": len(perspectival_set)
         })
 
-        print("DEBUG: Superposition Object:")
-        import pprint
-        pprint.pprint(superposition_object)
-        
         return RetrievalResult(
             trace_id=trace_id,
             final_answer=final_answer,
@@ -290,7 +295,16 @@ ANSWER:"""
             sources=[v.worker_id for v in votes],
             superposition=superposition_object
         )
-    except BaseException as e:
+
+    except Exception as e:
         import traceback
         traceback.print_exc()
-        raise e
+        logger.logger.error(f"Query handling error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Ensure pubsub is cleaned up
+        if pubsub:
+            try:
+                pubsub.close()
+            except:
+                pass
