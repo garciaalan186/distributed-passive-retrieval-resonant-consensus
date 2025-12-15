@@ -24,7 +24,8 @@ echo "Region: $REGION"
 echo ""
 
 # Set bucket name based on project ID for uniqueness
-HISTORY_BUCKET="${HISTORY_BUCKET:-dpr-history-data-${PROJECT_ID}}"
+# Always use project-specific bucket to avoid conflicts
+HISTORY_BUCKET="dpr-history-data-${PROJECT_ID}"
 echo "History Bucket: $HISTORY_BUCKET"
 echo ""
 

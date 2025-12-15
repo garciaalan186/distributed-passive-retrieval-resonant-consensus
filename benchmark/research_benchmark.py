@@ -233,19 +233,31 @@ class ResearchBenchmarkSuite:
     
     def run_baseline_queries(self, queries: List[Dict], results_dir: Path) -> List[Dict]:
         """Run baseline RAG queries (local fallback if cloud unavailable)"""
-        
+
         results_dir.mkdir(exist_ok=True)
         results = []
-        
+
+        # Silence tokenizers parallelism warnings
+        os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
         try:
             from dpr_rc.passive_agent import PassiveWorker
             worker = PassiveWorker()
-            
+
             for i, query in enumerate(queries):
                 query_id = f"query_{i:04d}"
-                
+
+                # Convert timestamp_context to shard_id format
+                # timestamp_context is like "2015-12-31", shard_id should be "shard_2015"
+                timestamp_context = query.get("timestamp_context", "")
+                if timestamp_context:
+                    year = timestamp_context.split("-")[0]
+                    shard_id = f"shard_{year}"
+                else:
+                    shard_id = "shard_2020"  # default
+
                 start = time.perf_counter()
-                doc = worker.retrieve(query["question"], query.get("timestamp_context"))
+                doc = worker.retrieve(query["question"], shard_id, timestamp_context)
                 latency_ms = (time.perf_counter() - start) * 1000
                 
                 if doc:
@@ -479,6 +491,9 @@ class ResearchBenchmarkSuite:
 
 def main():
     """Run complete research benchmark"""
+    # Silence HuggingFace tokenizers parallelism warnings
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
     suite = ResearchBenchmarkSuite()
     results = suite.run_full_benchmark()
     
