@@ -145,13 +145,13 @@ else
     SLM_SERVICE_URL=$(gcloud run services describe dpr-slm-service --region=$REGION --format='value(status.url)' 2>/dev/null || echo "")
     echo "SLM Service URL: $SLM_SERVICE_URL"
 
-    # Step 4b: Deploy Active Controller
+    # Step 4b: Deploy Active Controller (with SLM for query enhancement)
     echo "Deploying Active Controller..."
     gcloud run deploy dpr-active-controller \
         --image="${IMAGE_URI}" \
         --region="${REGION}" \
         --allow-unauthenticated \
-        --set-env-vars="ROLE=active,HISTORY_BUCKET=${HISTORY_BUCKET},HISTORY_SCALE=${BENCHMARK_SCALE}" \
+        --set-env-vars="ROLE=active,HISTORY_BUCKET=${HISTORY_BUCKET},HISTORY_SCALE=${BENCHMARK_SCALE},SLM_SERVICE_URL=${SLM_SERVICE_URL},ENABLE_QUERY_ENHANCEMENT=true" \
         --memory=2Gi \
         --timeout=300 \
         --quiet || true

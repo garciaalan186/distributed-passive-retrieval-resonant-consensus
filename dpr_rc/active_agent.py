@@ -3,7 +3,8 @@ import json
 import os
 import time
 import math
-from typing import List, Dict
+import requests
+from typing import List, Dict, Optional
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from fastapi import FastAPI, HTTPException
@@ -22,6 +23,11 @@ REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 RESPONSE_TIMEOUT = float(os.getenv("RESPONSE_TIMEOUT", "5.0"))  # seconds to wait for votes
 MIN_VOTES_FOR_CONSENSUS = int(os.getenv("MIN_VOTES", "1"))  # Minimum votes needed
+
+# SLM Service for query enhancement (improves retrieval quality)
+SLM_SERVICE_URL = os.getenv("SLM_SERVICE_URL", "http://localhost:8081")
+SLM_ENHANCE_TIMEOUT = float(os.getenv("SLM_ENHANCE_TIMEOUT", "5.0"))  # seconds
+ENABLE_QUERY_ENHANCEMENT = os.getenv("ENABLE_QUERY_ENHANCEMENT", "true").lower() == "true"
 
 logger = StructuredLogger(ComponentType.ACTIVE_CONTROLLER)
 redis_client = Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
@@ -98,7 +104,77 @@ class QuadrantClassification:
 @app.get("/health")
 def health_check():
     """Health check endpoint"""
-    return {"status": "healthy", "component": "active_controller"}
+    return {
+        "status": "healthy",
+        "component": "active_controller",
+        "query_enhancement": ENABLE_QUERY_ENHANCEMENT,
+        "slm_service": SLM_SERVICE_URL
+    }
+
+
+def enhance_query_via_slm(query_text: str, timestamp_context: Optional[str] = None) -> dict:
+    """
+    Call the SLM service to enhance the query for better retrieval.
+
+    The SLM:
+    - Expands abbreviations (ML -> machine learning)
+    - Adds synonyms for better recall
+    - Clarifies ambiguous terms
+    - Incorporates temporal context
+
+    Args:
+        query_text: Original query from user
+        timestamp_context: Optional temporal context
+
+    Returns:
+        dict with enhanced_query and expansions, or original query on failure
+    """
+    if not ENABLE_QUERY_ENHANCEMENT:
+        return {
+            "original_query": query_text,
+            "enhanced_query": query_text,
+            "expansions": [],
+            "enhancement_used": False
+        }
+
+    try:
+        response = requests.post(
+            f"{SLM_SERVICE_URL}/enhance_query",
+            json={
+                "query": query_text,
+                "timestamp_context": timestamp_context
+            },
+            timeout=SLM_ENHANCE_TIMEOUT
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            logger.logger.info(
+                f"Query enhanced: '{query_text}' -> '{result.get('enhanced_query', query_text)}' "
+                f"(expansions: {result.get('expansions', [])})"
+            )
+            return {
+                "original_query": query_text,
+                "enhanced_query": result.get("enhanced_query", query_text),
+                "expansions": result.get("expansions", []),
+                "enhancement_used": True,
+                "inference_time_ms": result.get("inference_time_ms", 0)
+            }
+        else:
+            logger.logger.warning(
+                f"SLM enhance_query returned {response.status_code}, using original query"
+            )
+
+    except requests.exceptions.RequestException as e:
+        logger.logger.warning(f"SLM service unavailable for query enhancement: {e}")
+
+    # Fallback: return original query
+    return {
+        "original_query": query_text,
+        "enhanced_query": query_text,
+        "expansions": [],
+        "enhancement_used": False
+    }
 
 
 @app.post("/query", response_model=RetrievalResult)
@@ -119,6 +195,21 @@ async def handle_query(request: QueryRequest):
 
     pubsub = None
     try:
+        # 0. Query Enhancement via SLM (improves retrieval quality)
+        # The SLM expands abbreviations, adds synonyms, and clarifies ambiguous terms
+        enhancement_result = enhance_query_via_slm(
+            request.query_text,
+            request.timestamp_context
+        )
+        enhanced_query = enhancement_result["enhanced_query"]
+
+        logger.log_event(trace_id, EventType.SYSTEM_INIT, {
+            "original_query": request.query_text,
+            "enhanced_query": enhanced_query,
+            "expansions": enhancement_result.get("expansions", []),
+            "enhancement_used": enhancement_result.get("enhancement_used", False)
+        })
+
         # 1. L1 Routing - Determine target shards
         target_shards = RouteLogic.get_target_shards(request)
 
@@ -134,9 +225,11 @@ async def handle_query(request: QueryRequest):
 
         # 3. Broadcast RFI (Request for Information) to Redis Stream
         # Per Spec Section 4.2: "A* publishes an RFI message to Redis"
+        # Use ENHANCED query for better retrieval, but keep original for verification
         rfi_payload = {
             "trace_id": trace_id,
-            "query_text": request.query_text,
+            "query_text": enhanced_query,  # Enhanced query for retrieval
+            "original_query": request.query_text,  # Original for SLM verification
             "target_shards": json.dumps(target_shards),
             "timestamp_context": request.timestamp_context or ""
         }

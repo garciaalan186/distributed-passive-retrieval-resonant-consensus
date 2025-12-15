@@ -39,14 +39,14 @@ gcloud run deploy dpr-slm-service \
 SLM_SERVICE_URL=$(gcloud run services describe dpr-slm-service --region="${REGION}" --format='value(status.url)')
 echo "SLM Service URL: ${SLM_SERVICE_URL}"
 
-# --- Step 2: Deploy Active Controller ---
+# --- Step 2: Deploy Active Controller (with SLM for query enhancement) ---
 echo ""
 echo "--- Deploying Active Controller ---"
 gcloud run deploy dpr-active-controller \
     --image="${IMAGE_URI}" \
     --region="${REGION}" \
     --service-account="${SERVICE_ACCOUNT}" \
-    --set-env-vars="REDIS_HOST=${REDIS_HOST},REDIS_PORT=${REDIS_PORT},LOG_BUCKET=${LOG_BUCKET},ROLE=active,CONTROLLER_URL=http://localhost:8080/query" \
+    --set-env-vars="REDIS_HOST=${REDIS_HOST},REDIS_PORT=${REDIS_PORT},LOG_BUCKET=${LOG_BUCKET},ROLE=active,CONTROLLER_URL=http://localhost:8080/query,SLM_SERVICE_URL=${SLM_SERVICE_URL},ENABLE_QUERY_ENHANCEMENT=true" \
     --vpc-connector="${VPC_CONNECTOR}" \
     --vpc-egress=private-ranges-only \
     --memory=2Gi \

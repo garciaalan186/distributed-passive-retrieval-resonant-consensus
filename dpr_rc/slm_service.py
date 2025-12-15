@@ -50,6 +50,53 @@ class VerifyResponse(BaseModel):
     inference_time_ms: float
 
 
+class EnhanceQueryRequest(BaseModel):
+    """Request for query enhancement"""
+    query: str
+    timestamp_context: Optional[str] = None
+    trace_id: Optional[str] = None
+
+
+class EnhanceQueryResponse(BaseModel):
+    """Response from query enhancement"""
+    original_query: str
+    enhanced_query: str
+    expansions: list[str]
+    model_id: str
+    inference_time_ms: float
+
+
+def get_query_enhancement_prompt(query: str, timestamp_context: Optional[str] = None) -> str:
+    """
+    Construct a prompt to enhance/expand the query for better retrieval.
+
+    The SLM reformulates the query to improve semantic matching by:
+    - Expanding abbreviations
+    - Adding synonyms
+    - Clarifying ambiguous terms
+    - Adding temporal context
+    """
+    temporal_hint = ""
+    if timestamp_context:
+        temporal_hint = f"\nTemporal context: The query relates to events around {timestamp_context}."
+
+    return f"""You are a query enhancement assistant. Your task is to improve a search query for better retrieval from a historical knowledge base.
+
+Original query: {query}{temporal_hint}
+
+Instructions:
+1. Expand any abbreviations (e.g., "ML" -> "machine learning")
+2. Add relevant synonyms or related terms
+3. Clarify any ambiguous terms
+4. Keep the enhanced query concise but more searchable
+5. List 2-3 key expansion terms separately
+
+Respond in this exact JSON format:
+{{"enhanced_query": "<improved query text>", "expansions": ["term1", "term2", "term3"]}}
+
+Your response (JSON only):"""
+
+
 def get_verification_prompt(query: str, content: str) -> str:
     """
     Construct the verification prompt for the SLM.
@@ -309,6 +356,137 @@ def batch_verify(requests: list[VerifyRequest]):
             })
 
     return {"results": results, "model_id": SLM_MODEL}
+
+
+def enhance_query(query: str, timestamp_context: Optional[str] = None) -> dict:
+    """
+    Enhance a query for better retrieval using the SLM.
+
+    Args:
+        query: The original query from A*
+        timestamp_context: Optional temporal context
+
+    Returns:
+        dict with enhanced_query, expansions, inference_time_ms
+    """
+    global _model, _tokenizer
+
+    if _model is None or _tokenizer is None:
+        raise RuntimeError("Model not loaded")
+
+    start_time = time.time()
+
+    # Construct prompt
+    prompt = get_query_enhancement_prompt(query, timestamp_context)
+
+    # Tokenize
+    inputs = _tokenizer(
+        prompt,
+        return_tensors="pt",
+        truncation=True,
+        max_length=500
+    )
+
+    if DEVICE == "cuda":
+        inputs = {k: v.to("cuda") for k, v in inputs.items()}
+
+    # Generate
+    with torch.no_grad():
+        outputs = _model.generate(
+            **inputs,
+            max_new_tokens=100,  # Shorter for query enhancement
+            do_sample=False,
+            pad_token_id=_tokenizer.pad_token_id,
+            eos_token_id=_tokenizer.eos_token_id
+        )
+
+    # Decode response
+    input_length = inputs["input_ids"].shape[1]
+    response_text = _tokenizer.decode(
+        outputs[0][input_length:],
+        skip_special_tokens=True
+    )
+
+    inference_time = (time.time() - start_time) * 1000
+
+    # Parse response
+    result = parse_enhancement_response(response_text, query)
+    result["inference_time_ms"] = inference_time
+    result["model_id"] = SLM_MODEL
+
+    return result
+
+
+def parse_enhancement_response(response_text: str, original_query: str) -> dict:
+    """
+    Parse the model's query enhancement response.
+    """
+    text = response_text.strip()
+
+    # Try to extract JSON
+    start_idx = text.find('{')
+    end_idx = text.rfind('}')
+
+    if start_idx != -1 and end_idx != -1:
+        json_str = text[start_idx:end_idx + 1]
+        try:
+            parsed = json.loads(json_str)
+            enhanced = parsed.get("enhanced_query", original_query)
+            expansions = parsed.get("expansions", [])
+            # Ensure expansions is a list of strings
+            if isinstance(expansions, list):
+                expansions = [str(e) for e in expansions[:5]]  # Limit to 5
+            else:
+                expansions = []
+            return {
+                "original_query": original_query,
+                "enhanced_query": str(enhanced),
+                "expansions": expansions
+            }
+        except json.JSONDecodeError:
+            pass
+
+    # Fallback: return original query with no expansions
+    return {
+        "original_query": original_query,
+        "enhanced_query": original_query,
+        "expansions": []
+    }
+
+
+@app.post("/enhance_query", response_model=EnhanceQueryResponse)
+def enhance_query_endpoint(request: EnhanceQueryRequest):
+    """
+    Enhance a query for better retrieval.
+
+    Called by Active Agent before broadcasting RFI to improve
+    semantic matching in the embedding space.
+
+    The SLM:
+    - Expands abbreviations (ML -> machine learning)
+    - Adds synonyms for better recall
+    - Clarifies ambiguous terms
+    - Incorporates temporal context if provided
+    """
+    try:
+        result = enhance_query(request.query, request.timestamp_context)
+
+        return EnhanceQueryResponse(
+            original_query=result["original_query"],
+            enhanced_query=result["enhanced_query"],
+            expansions=result["expansions"],
+            model_id=result["model_id"],
+            inference_time_ms=result["inference_time_ms"]
+        )
+    except Exception as e:
+        # On error, return original query unchanged
+        return EnhanceQueryResponse(
+            original_query=request.query,
+            enhanced_query=request.query,
+            expansions=[],
+            model_id=SLM_MODEL,
+            inference_time_ms=0.0
+        )
 
 
 if __name__ == "__main__":

@@ -503,6 +503,9 @@ class PassiveWorker:
         """
         Retrieve relevant historical context from a specific shard.
 
+        Uses the SAME embedding model (all-MiniLM-L6-v2) for query embedding
+        as was used for document embeddings, ensuring consistent vector space.
+
         Args:
             query_text: Query to search for
             shard_id: Which shard to search in
@@ -519,9 +522,12 @@ class PassiveWorker:
             return None
 
         try:
-            # Query using the same embedding model
+            # Embed query using the SAME model as documents (fixes embedding mismatch)
+            query_embedding = embed_query(query_text, EMBEDDING_MODEL)
+
+            # Query using pre-computed embedding vector
             results = collection.query(
-                query_texts=[query_text],
+                query_embeddings=[query_embedding.tolist()],
                 n_results=3
             )
 
@@ -625,9 +631,14 @@ class PassiveWorker:
         Process a Request for Information (RFI) from the Active Agent.
 
         LAZY LOADING: Loads target shards on-demand when RFI specifies them.
+
+        Query handling:
+        - query_text: Enhanced query (from SLM) used for embedding-based retrieval
+        - original_query: Original user query used for SLM verification
         """
         trace_id = rfi_data.get('trace_id', 'unknown')
-        query_text = rfi_data.get('query_text', '')
+        query_text = rfi_data.get('query_text', '')  # Enhanced query for retrieval
+        original_query = rfi_data.get('original_query', query_text)  # Original for verification
         ts_context = rfi_data.get('timestamp_context', '')
         target_shards_str = rfi_data.get('target_shards', '[]')
 
@@ -647,16 +658,16 @@ class PassiveWorker:
             # In shard-agnostic mode, we handle all shards
             my_shard = f"shard_{self.epoch_year}"
 
-            # Retrieve from this shard
+            # Retrieve from this shard using ENHANCED query (better embeddings match)
             doc = self.retrieve(query_text, shard_id, ts_context)
 
             if not doc:
                 logger.logger.debug(f"No relevant history in {shard_id} for: {query_text[:50]}...")
                 continue
 
-            # L2 Verification
+            # L2 Verification using ORIGINAL query (SLM judges against user's intent)
             depth = doc.get('metadata', {}).get('hierarchy_depth', 0)
-            confidence = self.verify_l2(doc['content'], query_text, depth)
+            confidence = self.verify_l2(doc['content'], original_query, depth)
 
             if confidence < 0.3:
                 logger.logger.debug(f"Confidence {confidence:.2f} below threshold")
