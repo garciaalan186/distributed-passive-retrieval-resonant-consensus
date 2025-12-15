@@ -1,6 +1,9 @@
 #!/bin/bash
 # run_cloud_benchmark.sh
 # End-to-end test: Data Prep -> Build -> Deploy -> Benchmark
+#
+# IMPORTANT: Embedding computation happens in CLOUD BUILD, not locally.
+# Your local machine only generates lightweight raw JSON.
 
 set -e
 
@@ -30,10 +33,9 @@ export HISTORY_BUCKET
 export EMBEDDING_MODEL
 export PROJECT_ID
 
-# 0. Ensure Dependencies
-echo "--- Step 0: Checking Dependencies ---"
-# Note: numpy<2 required for compatibility with PyTorch/sentence-transformers
-pip install -q google-cloud-storage sentence-transformers "numpy<2" 2>/dev/null || true
+# 0. Ensure Local Dependencies (lightweight only)
+echo "--- Step 0: Checking Local Dependencies ---"
+pip install -q google-cloud-storage 2>/dev/null || true
 
 # 1. Ensure GCS Bucket Exists
 echo ""
@@ -46,60 +48,94 @@ else
     echo "✓ Bucket created"
 fi
 
-# 2. Ensure Raw Data and Embeddings Exist
+# 2. Generate Raw Data Locally (fast, no ML)
 echo ""
-echo "--- Step 2: Ensuring Data & Embeddings ---"
-echo "Checking if raw data and pre-computed embeddings exist in GCS..."
-echo ""
-echo "NOTE: Embedding computation is parallelized across time shards."
-echo "      Each shard is independent - no cross-shard context needed."
+echo "--- Step 2: Generating Raw Data ---"
+echo "NOTE: Only generating raw JSON locally (fast)."
+echo "      Embedding computation will happen in Cloud Build."
 echo ""
 
-# First try to ensure embeddings exist (will skip if already present)
-python3 -m benchmark.generate_and_upload \
-    --ensure-embeddings \
-    --scale "$BENCHMARK_SCALE" \
-    --model "$EMBEDDING_MODEL" || {
+# Check if raw data already exists in GCS
+RAW_EXISTS=$(gsutil ls "gs://${HISTORY_BUCKET}/raw/${BENCHMARK_SCALE}/dataset.json" 2>/dev/null && echo "yes" || echo "no")
 
-    echo ""
-    echo "Embeddings not found. Generating raw data and embeddings..."
+if [ "$RAW_EXISTS" = "yes" ]; then
+    echo "✓ Raw data already exists in GCS"
+else
+    echo "Generating raw synthetic data locally..."
     python3 -m benchmark.generate_and_upload \
         --scale "$BENCHMARK_SCALE" \
-        --model "$EMBEDDING_MODEL" \
+        --skip-embeddings \
         --force
-}
+    echo "✓ Raw data uploaded to GCS"
+fi
 
+# 3. Infrastructure Setup
 echo ""
-echo "✓ Data and embeddings ready"
-
-# 3. Infrastructure & Build
-echo ""
-echo "--- Step 3: Infrastructure & Build ---"
-REPO_NAME="dpr-repo"
-IMAGE_URI="gcr.io/${PROJECT_ID}/dpr-agent:latest"
-
-# Ensure infrastructure exists
-echo "Ensuring infrastructure..."
+echo "--- Step 3: Infrastructure Setup ---"
 ./infrastructure.sh
 
-echo "Submitting build to Cloud Build..."
-gcloud builds submit --tag $IMAGE_URI .
-
-# 4. Deploy Services
+# 4. Build Container & Compute Embeddings in Cloud Build
 echo ""
-echo "--- Step 4: Deploying Services ---"
+echo "--- Step 4: Cloud Build (Container + Embeddings) ---"
+echo "Building container AND computing embeddings in Cloud Build..."
+echo "This runs on Google's cloud infrastructure, not your local machine."
+echo ""
+
+IMAGE_URI="gcr.io/${PROJECT_ID}/dpr-agent:latest"
+
+# Create a cloudbuild.yaml that builds the container AND computes embeddings
+cat > /tmp/cloudbuild-with-embeddings.yaml << EOF
+steps:
+  # Step 1: Build the container
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', '${IMAGE_URI}', '.']
+
+  # Step 2: Push the container
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '${IMAGE_URI}']
+
+  # Step 3: Compute embeddings using the built container (runs in cloud!)
+  - name: '${IMAGE_URI}'
+    entrypoint: 'python3'
+    args:
+      - '-m'
+      - 'benchmark.generate_and_upload'
+      - '--ensure-embeddings'
+      - '--scale'
+      - '${BENCHMARK_SCALE}'
+      - '--model'
+      - '${EMBEDDING_MODEL}'
+    env:
+      - 'HISTORY_BUCKET=${HISTORY_BUCKET}'
+
+images:
+  - '${IMAGE_URI}'
+
+timeout: '3600s'
+options:
+  machineType: 'E2_HIGHCPU_8'
+EOF
+
+echo "Submitting to Cloud Build (this may take several minutes)..."
+gcloud builds submit --config=/tmp/cloudbuild-with-embeddings.yaml .
+
+echo "✓ Container built and embeddings computed in cloud"
+
+# 5. Deploy Services
+echo ""
+echo "--- Step 5: Deploying Services ---"
 chmod +x deploy_commands.sh
 ./deploy_commands.sh
 
-# 5. Get Controller URL
+# 6. Get Controller URL
 echo ""
-echo "--- Step 5: Resolving Endpoint ---"
+echo "--- Step 6: Resolving Endpoint ---"
 CONTROLLER_URL=$(gcloud run services describe dpr-active-controller --region=$REGION --format='value(status.url)')
 echo "Controller URL: $CONTROLLER_URL"
 
-# 6. Run Benchmark
+# 7. Run Benchmark
 echo ""
-echo "--- Step 6: Running Benchmark ---"
+echo "--- Step 7: Running Benchmark ---"
 echo "Targeting: ${CONTROLLER_URL}"
 echo "Scale: ${BENCHMARK_SCALE}"
 echo ""
@@ -110,9 +146,9 @@ export HISTORY_SCALE="${BENCHMARK_SCALE}"
 
 python3 -m benchmark.research_benchmark
 
-# 7. Report
+# 8. Report
 echo ""
-echo "--- Step 7: Results ---"
+echo "--- Step 8: Results ---"
 echo "Results available in $RESULTS_DIR/"
 echo ""
 echo "=== DPR-RC Cloud Benchmark Complete ==="
