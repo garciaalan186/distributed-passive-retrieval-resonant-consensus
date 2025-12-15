@@ -32,7 +32,8 @@ export PROJECT_ID
 
 # 0. Ensure Dependencies
 echo "--- Step 0: Checking Dependencies ---"
-pip install -q google-cloud-storage sentence-transformers numpy 2>/dev/null || true
+# Note: numpy<2 required for compatibility with PyTorch/sentence-transformers
+pip install -q google-cloud-storage sentence-transformers "numpy<2" 2>/dev/null || true
 
 # 1. Ensure GCS Bucket Exists
 echo ""
