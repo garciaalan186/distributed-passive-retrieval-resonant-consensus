@@ -362,35 +362,70 @@ class ResearchBenchmarkSuite:
             # Limit to reasonable size (SLM will sample further)
             valid_terms = valid_terms[:50]
 
-            # Call SLM service with proper request structure
-            response = requests.post(
-                f"{self.slm_service_url}/check_hallucination",
-                json={
-                    "query": query,
-                    "system_response": system_response,
-                    "ground_truth": ground_truth,
-                    "valid_terms": valid_terms,
-                    "confidence": confidence
-                },
-                timeout=self.slm_timeout
-            )
+            # Call SLM service with retry logic (exponential backoff)
+            max_retries = 3
+            base_delay = 1.0  # seconds
 
-            if response.status_code == 200:
-                # Parse the HallucinationCheckResponse
-                result = response.json()
-                return {
-                    "has_hallucination": result.get("has_hallucination", False),
-                    "hallucination_type": result.get("hallucination_type"),
-                    "explanation": result.get("explanation", ""),
-                    "severity": result.get("severity", "none"),
-                    "flagged_content": result.get("flagged_content", [])
-                }
-            else:
-                # SLM service failed, fall back to conservative approach
-                print(f"SLM hallucination detection failed: HTTP {response.status_code}")
-                return self._fallback_hallucination_detection(
-                    system_response, glossary, confidence
-                )
+            last_error = None
+            for attempt in range(max_retries):
+                try:
+                    response = requests.post(
+                        f"{self.slm_service_url}/check_hallucination",
+                        json={
+                            "query": query,
+                            "system_response": system_response,
+                            "ground_truth": ground_truth,
+                            "valid_terms": valid_terms,
+                            "confidence": confidence
+                        },
+                        timeout=self.slm_timeout
+                    )
+
+                    if response.status_code == 200:
+                        # Parse the HallucinationCheckResponse
+                        result = response.json()
+                        return {
+                            "has_hallucination": result.get("has_hallucination", False),
+                            "hallucination_type": result.get("hallucination_type"),
+                            "explanation": result.get("explanation", ""),
+                            "severity": result.get("severity", "none"),
+                            "flagged_content": result.get("flagged_content", [])
+                        }
+                    elif response.status_code >= 500:
+                        # Server error - retry
+                        last_error = f"HTTP {response.status_code}"
+                        if attempt < max_retries - 1:
+                            delay = base_delay * (2 ** attempt)
+                            print(f"SLM service error (attempt {attempt + 1}/{max_retries}), retrying in {delay}s...")
+                            time.sleep(delay)
+                            continue
+                    else:
+                        # Client error (4xx) - don't retry
+                        print(f"SLM hallucination detection failed: HTTP {response.status_code}")
+                        break
+
+                except requests.Timeout:
+                    last_error = "timeout"
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)
+                        print(f"SLM service timeout (attempt {attempt + 1}/{max_retries}), retrying in {delay}s...")
+                        time.sleep(delay)
+                        continue
+                    break
+                except requests.ConnectionError as e:
+                    last_error = f"connection error: {e}"
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)
+                        print(f"SLM connection error (attempt {attempt + 1}/{max_retries}), retrying in {delay}s...")
+                        time.sleep(delay)
+                        continue
+                    break
+
+            # All retries exhausted, fall back
+            print(f"SLM hallucination detection failed after {max_retries} attempts ({last_error})")
+            return self._fallback_hallucination_detection(
+                system_response, glossary, confidence
+            )
 
         except Exception as e:
             print(f"Error in SLM hallucination detection: {e}")
