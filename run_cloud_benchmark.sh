@@ -1,9 +1,13 @@
 #!/bin/bash
 # run_cloud_benchmark.sh
-# End-to-end test: Data Prep -> Build -> Deploy -> Benchmark
+# End-to-end cloud benchmark - NO Python runs locally
 #
-# IMPORTANT: Embedding computation happens in CLOUD BUILD, not locally.
-# Your local machine only generates lightweight raw JSON.
+# ALL work happens in the cloud:
+# - Data generation: Cloud Build
+# - Embedding computation: Cloud Build
+# - Benchmark execution: Cloud Build
+#
+# Your local machine only runs gcloud/gsutil commands.
 
 set -e
 
@@ -16,7 +20,10 @@ EMBEDDING_MODEL="${EMBEDDING_MODEL:-all-MiniLM-L6-v2}"
 REGION="${REGION:-us-central1}"
 
 echo "=== DPR-RC Cloud Benchmark Start ==="
-PROJECT_ID=$(gcloud config get-value project)
+echo "NOTE: All Python/ML work runs in Google Cloud, not locally."
+echo ""
+
+PROJECT_ID=$(gcloud config get-value project 2>/dev/null)
 echo "Project: $PROJECT_ID"
 echo "Scale: $BENCHMARK_SCALE"
 echo "Embedding Model: $EMBEDDING_MODEL"
@@ -24,22 +31,13 @@ echo "Region: $REGION"
 echo ""
 
 # Set bucket name based on project ID for uniqueness
-# Always use project-specific bucket to avoid conflicts
 HISTORY_BUCKET="dpr-history-data-${PROJECT_ID}"
 echo "History Bucket: $HISTORY_BUCKET"
 echo ""
 
-# Export for Python scripts
-export HISTORY_BUCKET
-export EMBEDDING_MODEL
-export PROJECT_ID
+IMAGE_URI="gcr.io/${PROJECT_ID}/dpr-agent:latest"
 
-# 0. Ensure Local Dependencies (lightweight only)
-echo "--- Step 0: Checking Local Dependencies ---"
-pip install -q google-cloud-storage 2>/dev/null || true
-
-# 1. Ensure GCS Bucket Exists with proper permissions
-echo ""
+# --- Step 1: Ensure GCS Bucket Exists ---
 echo "--- Step 1: Ensuring GCS Bucket ---"
 if gsutil ls -b "gs://${HISTORY_BUCKET}" >/dev/null 2>&1; then
     echo "✓ Bucket gs://${HISTORY_BUCKET} exists"
@@ -49,73 +47,64 @@ else
     echo "✓ Bucket created"
 fi
 
-# Ensure current user has full access (fixes 403 permission errors)
+# Ensure current user and Cloud Build have access
 CURRENT_USER=$(gcloud config get-value account 2>/dev/null)
 if [ -n "$CURRENT_USER" ]; then
-    echo "Ensuring bucket permissions for $CURRENT_USER..."
+    echo "Configuring bucket permissions..."
     gsutil iam ch "user:${CURRENT_USER}:objectAdmin" "gs://${HISTORY_BUCKET}" 2>/dev/null || true
-    echo "✓ Bucket permissions configured"
 fi
+# Grant Cloud Build service account access
+PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
+gsutil iam ch "serviceAccount:${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com:objectAdmin" "gs://${HISTORY_BUCKET}" 2>/dev/null || true
+echo "✓ Bucket permissions configured"
 
-# 2. Generate Raw Data Locally (fast, no ML)
+# --- Step 2: Infrastructure Setup ---
 echo ""
-echo "--- Step 2: Generating Raw Data ---"
-echo "NOTE: Only generating raw JSON locally (fast)."
-echo "      Embedding computation will happen in Cloud Build."
-echo ""
-
-# Check if raw data already exists in GCS
-RAW_EXISTS=$(gsutil ls "gs://${HISTORY_BUCKET}/raw/${BENCHMARK_SCALE}/dataset.json" 2>/dev/null && echo "yes" || echo "no")
-
-if [ "$RAW_EXISTS" = "yes" ]; then
-    echo "✓ Raw data already exists in GCS"
+echo "--- Step 2: Infrastructure Setup ---"
+if [ -f "./infrastructure.sh" ]; then
+    chmod +x infrastructure.sh
+    ./infrastructure.sh
 else
-    echo "Generating raw synthetic data locally..."
-    python3 -m benchmark.generate_and_upload \
-        --scale "$BENCHMARK_SCALE" \
-        --skip-embeddings \
-        --force
-    echo "✓ Raw data uploaded to GCS"
+    echo "No infrastructure.sh found, skipping..."
 fi
 
-# 3. Infrastructure Setup
+# --- Step 3: Cloud Build - Build, Generate Data, Compute Embeddings ---
 echo ""
-echo "--- Step 3: Infrastructure Setup ---"
-./infrastructure.sh
-
-# 4. Build Container & Compute Embeddings in Cloud Build
-echo ""
-echo "--- Step 4: Cloud Build (Container + Embeddings) ---"
-echo "Building container AND computing embeddings in Cloud Build..."
-echo "This runs on Google's cloud infrastructure, not your local machine."
+echo "--- Step 3: Cloud Build (Container + Data + Embeddings) ---"
+echo "Building container and preparing all data in Google Cloud..."
+echo "This runs on cloud infrastructure, not your local machine."
 echo ""
 
-IMAGE_URI="gcr.io/${PROJECT_ID}/dpr-agent:latest"
-
-# Create a cloudbuild.yaml that builds the container AND computes embeddings
-cat > /tmp/cloudbuild-with-embeddings.yaml << EOF
+# Create cloudbuild.yaml for full data prep
+cat > /tmp/cloudbuild-full.yaml << CLOUDEOF
 steps:
   # Step 1: Build the container
   - name: 'gcr.io/cloud-builders/docker'
     args: ['build', '-t', '${IMAGE_URI}', '.']
+    id: 'build'
 
   # Step 2: Push the container
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', '${IMAGE_URI}']
+    id: 'push'
+    waitFor: ['build']
 
-  # Step 3: Compute embeddings using the built container (runs in cloud!)
+  # Step 3: Generate raw data AND compute embeddings (all in cloud)
   - name: '${IMAGE_URI}'
     entrypoint: 'python3'
     args:
       - '-m'
       - 'benchmark.generate_and_upload'
-      - '--ensure-embeddings'
       - '--scale'
       - '${BENCHMARK_SCALE}'
       - '--model'
       - '${EMBEDDING_MODEL}'
+      - '--force'
     env:
       - 'HISTORY_BUCKET=${HISTORY_BUCKET}'
+      - 'TOKENIZERS_PARALLELISM=false'
+    id: 'generate-data'
+    waitFor: ['push']
 
 images:
   - '${IMAGE_URI}'
@@ -123,46 +112,91 @@ images:
 timeout: '3600s'
 options:
   machineType: 'E2_HIGHCPU_8'
-EOF
+CLOUDEOF
 
-echo "Submitting to Cloud Build (this may take several minutes)..."
-gcloud builds submit --config=/tmp/cloudbuild-with-embeddings.yaml .
+echo "Submitting data preparation to Cloud Build..."
+gcloud builds submit --config=/tmp/cloudbuild-full.yaml . --timeout=3600s
 
-echo "✓ Container built and embeddings computed in cloud"
+echo "✓ Container built, data generated, and embeddings computed in cloud"
 
-# 5. Deploy Services
+# --- Step 4: Deploy Services ---
 echo ""
-echo "--- Step 5: Deploying Services ---"
-chmod +x deploy_commands.sh
-./deploy_commands.sh
+echo "--- Step 4: Deploying Services ---"
+if [ -f "./deploy_commands.sh" ]; then
+    chmod +x deploy_commands.sh
+    ./deploy_commands.sh
+else
+    echo "No deploy_commands.sh found. Deploying manually..."
 
-# 6. Get Controller URL
+    # Deploy active controller
+    gcloud run deploy dpr-active-controller \
+        --image="${IMAGE_URI}" \
+        --region="${REGION}" \
+        --allow-unauthenticated \
+        --set-env-vars="ROLE=controller,HISTORY_BUCKET=${HISTORY_BUCKET},HISTORY_SCALE=${BENCHMARK_SCALE}" \
+        --memory=2Gi \
+        --timeout=300 \
+        --quiet || true
+fi
+
+# --- Step 5: Get Controller URL ---
 echo ""
-echo "--- Step 6: Resolving Endpoint ---"
-CONTROLLER_URL=$(gcloud run services describe dpr-active-controller --region=$REGION --format='value(status.url)')
-echo "Controller URL: $CONTROLLER_URL"
+echo "--- Step 5: Resolving Endpoint ---"
+CONTROLLER_URL=$(gcloud run services describe dpr-active-controller --region=$REGION --format='value(status.url)' 2>/dev/null || echo "")
 
-# 7. Run Benchmark
+if [ -z "$CONTROLLER_URL" ]; then
+    echo "Warning: Could not get controller URL. Services may not be deployed."
+    echo "Skipping benchmark execution."
+else
+    echo "Controller URL: $CONTROLLER_URL"
+
+    # --- Step 6: Run Benchmark in Cloud Build ---
+    echo ""
+    echo "--- Step 6: Running Benchmark (in Cloud Build) ---"
+    echo "Executing benchmark from cloud against deployed services..."
+
+    # Create cloudbuild for benchmark execution
+    cat > /tmp/cloudbuild-benchmark.yaml << BENCHEOF
+steps:
+  - name: '${IMAGE_URI}'
+    entrypoint: 'python3'
+    args:
+      - '-m'
+      - 'benchmark.research_benchmark'
+    env:
+      - 'CONTROLLER_URL=${CONTROLLER_URL}'
+      - 'HISTORY_BUCKET=${HISTORY_BUCKET}'
+      - 'HISTORY_SCALE=${BENCHMARK_SCALE}'
+      - 'TOKENIZERS_PARALLELISM=false'
+    id: 'run-benchmark'
+
+timeout: '1800s'
+options:
+  machineType: 'E2_HIGHCPU_8'
+BENCHEOF
+
+    echo "Submitting benchmark to Cloud Build..."
+    gcloud builds submit --config=/tmp/cloudbuild-benchmark.yaml . --timeout=1800s --no-source
+
+    echo "✓ Benchmark completed in cloud"
+fi
+
+# --- Step 7: Download Results ---
 echo ""
-echo "--- Step 7: Running Benchmark ---"
-echo "Targeting: ${CONTROLLER_URL}"
-echo "Scale: ${BENCHMARK_SCALE}"
+echo "--- Step 7: Downloading Results ---"
+# Results are saved locally by the benchmark, but since it ran in cloud,
+# we need to check if there are any results to download from GCS
+if gsutil ls "gs://${HISTORY_BUCKET}/benchmark_results/" >/dev/null 2>&1; then
+    echo "Downloading benchmark results from GCS..."
+    gsutil -m cp -r "gs://${HISTORY_BUCKET}/benchmark_results/*" "${RESULTS_DIR}/" 2>/dev/null || true
+    echo "✓ Results downloaded to ${RESULTS_DIR}/"
+else
+    echo "Note: Results are in Cloud Build logs (benchmark ran in cloud)"
+fi
+
+# --- Step 8: Cleanup ---
 echo ""
-
-# Export for benchmark script
-export CONTROLLER_URL="${CONTROLLER_URL}"
-export HISTORY_SCALE="${BENCHMARK_SCALE}"
-
-python3 -m benchmark.research_benchmark
-
-# 8. Report
-echo ""
-echo "--- Step 8: Results ---"
-echo "Results available in $RESULTS_DIR/"
-
-# 9. Cleanup - Delete Cloud Run services to avoid charges
-echo ""
-echo "--- Step 9: Cleanup (Deleting Cloud Run Services) ---"
+echo "--- Step 8: Cleanup (Deleting Cloud Run Services) ---"
 echo "Deleting Cloud Run services to avoid ongoing charges..."
 echo "(GCS data is preserved for future runs)"
 echo ""

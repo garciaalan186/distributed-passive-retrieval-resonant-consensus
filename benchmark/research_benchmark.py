@@ -496,6 +496,32 @@ class ResearchBenchmarkSuite:
             json.dump(data, f, indent=2, default=str)
 
 
+def upload_results_to_gcs(local_dir: Path):
+    """Upload benchmark results to GCS for retrieval."""
+    bucket_name = os.getenv("HISTORY_BUCKET")
+    if not bucket_name:
+        print("HISTORY_BUCKET not set, skipping GCS upload")
+        return
+
+    try:
+        from google.cloud import storage
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+
+        # Upload all files in results directory
+        for file_path in local_dir.rglob("*"):
+            if file_path.is_file():
+                relative_path = file_path.relative_to(local_dir)
+                blob_name = f"benchmark_results/{relative_path}"
+                blob = bucket.blob(blob_name)
+                blob.upload_from_filename(str(file_path))
+                print(f"  Uploaded: gs://{bucket_name}/{blob_name}")
+
+        print(f"✓ Results uploaded to gs://{bucket_name}/benchmark_results/")
+    except Exception as e:
+        print(f"Warning: Could not upload results to GCS: {e}")
+
+
 def main():
     """Run complete research benchmark"""
     # Silence HuggingFace tokenizers parallelism warnings
@@ -503,12 +529,17 @@ def main():
 
     suite = ResearchBenchmarkSuite()
     results = suite.run_full_benchmark()
-    
+
     print("\n" + "="*60)
     print("BENCHMARK COMPLETE")
     print("="*60)
     print(f"Results directory: {suite.output_dir}")
     print(f"Research report: {suite.output_dir}/RESEARCH_REPORT.md")
+
+    # Upload results to GCS if running in cloud
+    if os.getenv("HISTORY_BUCKET"):
+        print("\nUploading results to GCS...")
+        upload_results_to_gcs(suite.output_dir)
 
 
 if __name__ == "__main__":
