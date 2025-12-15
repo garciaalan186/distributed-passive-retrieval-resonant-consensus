@@ -4,6 +4,7 @@ redis==5.0.1
 chromadb==0.4.22
 pydantic==2.5.3
 numpy==1.26.3
+sentence-transformers==2.2.2
 transformers==4.36.2
 torch==2.1.2
 accelerate==0.25.0

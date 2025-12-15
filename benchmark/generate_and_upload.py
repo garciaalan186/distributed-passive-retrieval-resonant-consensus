@@ -40,6 +40,9 @@ from typing import Dict, List, Optional, Tuple
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
 
+# Set before any HuggingFace imports to prevent fork warnings
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 # Check for google-cloud-storage before importing
 try:
     from google.cloud import storage
