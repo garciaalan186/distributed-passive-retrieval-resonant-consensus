@@ -70,10 +70,14 @@ def compute_embeddings(
         model = SentenceTransformer(model_id)
         embeddings = model.encode(texts, show_progress_bar=len(texts) > 100)
         return np.array(embeddings, dtype=np.float32)
-    except ImportError:
+    except ImportError as e:
         # Fallback: generate deterministic pseudo-embeddings for testing
         # These maintain semantic similarity properties through hash-based generation
-        print(f"Warning: sentence-transformers not available, using deterministic fallback")
+        print(f"Warning: sentence-transformers not available (ImportError: {e}), using deterministic fallback")
+        return _generate_fallback_embeddings(texts, EMBEDDING_DIMENSION)
+    except Exception as e:
+        # Catch other errors (e.g., model download failures)
+        print(f"Warning: sentence-transformers failed ({type(e).__name__}: {e}), using deterministic fallback")
         return _generate_fallback_embeddings(texts, EMBEDDING_DIMENSION)
 
 

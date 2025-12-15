@@ -56,6 +56,8 @@ fi
 # Grant Cloud Build service account access
 PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
 gsutil iam ch "serviceAccount:${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com:objectAdmin" "gs://${HISTORY_BUCKET}" 2>/dev/null || true
+# Grant Compute Engine default service account access (used by Cloud Build workers)
+gsutil iam ch "serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com:objectAdmin" "gs://${HISTORY_BUCKET}" 2>/dev/null || true
 echo "✓ Bucket permissions configured"
 
 # --- Step 2: Infrastructure Setup ---
