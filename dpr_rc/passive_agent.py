@@ -29,6 +29,7 @@ from typing import Dict, Any, List, Optional, Set
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from pydantic import BaseModel
 import uvicorn
 
 # Disable ChromaDB telemetry (fixes "capture() takes 1 positional argument" errors)
@@ -630,7 +631,7 @@ class PassiveWorker:
         y = (y_base * 0.3) + (confidence * 0.7)
         return [round(x, 2), round(y, 2)]
 
-    def process_rfi(self, rfi_data: Dict[str, Any]):
+    def process_rfi(self, rfi_data: Dict[str, Any]) -> List[ConsensusVote]:
         """
         Process a Request for Information (RFI) from the Active Agent.
 
@@ -639,6 +640,9 @@ class PassiveWorker:
         Query handling:
         - query_text: Enhanced query (from SLM) used for embedding-based retrieval
         - original_query: Original user query used for SLM verification
+
+        Returns:
+            List of ConsensusVote objects (can be empty if no relevant content found)
         """
         trace_id = rfi_data.get('trace_id', 'unknown')
         query_text = rfi_data.get('query_text', '')  # Enhanced query for retrieval
@@ -646,15 +650,22 @@ class PassiveWorker:
         ts_context = rfi_data.get('timestamp_context', '')
         target_shards_str = rfi_data.get('target_shards', '[]')
 
-        # Parse target shards
+        # Parse target shards - support both string and list formats
         try:
-            target_shards = json.loads(target_shards_str) if target_shards_str else []
+            if isinstance(target_shards_str, list):
+                target_shards = target_shards_str
+            elif target_shards_str:
+                target_shards = json.loads(target_shards_str)
+            else:
+                target_shards = []
         except json.JSONDecodeError:
             target_shards = []
 
         # If no target shards specified, use default based on epoch
         if not target_shards or "broadcast" in target_shards:
             target_shards = [f"shard_{self.epoch_year}"]
+
+        votes = []
 
         # Process each target shard
         for shard_id in target_shards:
@@ -690,13 +701,20 @@ class PassiveWorker:
                 content_snippet=doc['content'][:500]
             )
 
-            # Publish vote
-            redis_client.publish(f"dpr:responses:{trace_id}", json.dumps(vote.model_dump()))
+            votes.append(vote)
+
+            # Also publish to Redis if available (for hybrid mode)
+            try:
+                redis_client.publish(f"dpr:responses:{trace_id}", json.dumps(vote.model_dump()))
+            except Exception:
+                pass  # Redis not available in HTTP-only mode
 
             logger.log_event(
                 trace_id, EventType.VOTE_CAST, vote.model_dump(),
                 metrics={"confidence": confidence, "shard": shard_id}
             )
+
+        return votes
 
     def get_loaded_shards(self) -> List[str]:
         """Return list of currently loaded shard IDs."""
@@ -758,6 +776,58 @@ def list_shards():
             }
         return {"shards": shards}
     return {"shards": {}}
+
+
+class RFIRequest(BaseModel):
+    """Request model for HTTP-based RFI processing"""
+    trace_id: str
+    query_text: str
+    original_query: Optional[str] = None
+    target_shards: List[str] = []
+    timestamp_context: Optional[str] = None
+
+
+class VoteResponse(BaseModel):
+    """Response model for HTTP-based RFI processing"""
+    worker_id: str
+    votes: List[Dict[str, Any]]
+    shards_queried: List[str]
+
+
+@app.post("/process_rfi", response_model=VoteResponse)
+def process_rfi_http(request: RFIRequest):
+    """
+    HTTP endpoint for processing RFI requests directly.
+
+    This enables Cloud Run deployments without Redis by allowing
+    the Active Controller to call workers directly via HTTP.
+
+    Returns votes synchronously instead of publishing to Redis.
+    """
+    global _worker_instance
+
+    if not _worker_instance:
+        # Initialize worker if not already done
+        _worker_instance = PassiveWorker()
+
+    # Convert request to RFI data format
+    rfi_data = {
+        "trace_id": request.trace_id,
+        "query_text": request.query_text,
+        "original_query": request.original_query or request.query_text,
+        "target_shards": request.target_shards,  # Pass as list directly
+        "timestamp_context": request.timestamp_context or ""
+    }
+
+    # Process RFI and get votes
+    votes = _worker_instance.process_rfi(rfi_data)
+
+    # Return votes as HTTP response
+    return VoteResponse(
+        worker_id=WORKER_ID,
+        votes=[v.model_dump() for v in votes],
+        shards_queried=request.target_shards or [f"shard_{_worker_instance.epoch_year}"]
+    )
 
 
 # Global worker instance

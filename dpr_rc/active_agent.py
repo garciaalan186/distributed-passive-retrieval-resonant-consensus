@@ -29,8 +29,23 @@ SLM_SERVICE_URL = os.getenv("SLM_SERVICE_URL", "http://localhost:8081")
 SLM_ENHANCE_TIMEOUT = float(os.getenv("SLM_ENHANCE_TIMEOUT", "5.0"))  # seconds
 ENABLE_QUERY_ENHANCEMENT = os.getenv("ENABLE_QUERY_ENHANCEMENT", "true").lower() == "true"
 
+# HTTP-based worker communication (for Cloud Run without Redis)
+# Can be comma-separated list of worker URLs
+PASSIVE_WORKER_URL = os.getenv("PASSIVE_WORKER_URL", "")
+USE_HTTP_WORKERS = os.getenv("USE_HTTP_WORKERS", "true").lower() == "true"
+HTTP_WORKER_TIMEOUT = float(os.getenv("HTTP_WORKER_TIMEOUT", "30.0"))  # seconds
+
 logger = StructuredLogger(ComponentType.ACTIVE_CONTROLLER)
-redis_client = Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+
+# Initialize Redis client (may fail in HTTP-only mode, that's OK)
+try:
+    redis_client = Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+    redis_client.ping()  # Test connection
+    REDIS_AVAILABLE = True
+except Exception as e:
+    logger.logger.warning(f"Redis not available: {e}. Using HTTP-only mode.")
+    redis_client = None
+    REDIS_AVAILABLE = False
 
 # Streams
 RFI_STREAM = "dpr:rfi"
@@ -41,11 +56,14 @@ VOTE_STREAM = "dpr:votes"
 async def lifespan(app: FastAPI):
     """Lifespan context manager for FastAPI startup/shutdown"""
     # Startup
-    try:
-        redis_client.xgroup_create(VOTE_STREAM, "controller_group", mkstream=True)
-    except Exception:
-        pass  # Group already exists
-    logger.logger.info("Active Controller Started")
+    if REDIS_AVAILABLE and redis_client:
+        try:
+            redis_client.xgroup_create(VOTE_STREAM, "controller_group", mkstream=True)
+        except Exception:
+            pass  # Group already exists
+    logger.logger.info(
+        f"Active Controller Started (Redis: {REDIS_AVAILABLE}, HTTP Workers: {USE_HTTP_WORKERS})"
+    )
     yield
     # Shutdown
     logger.logger.info("Active Controller Shutting Down")
@@ -108,8 +126,87 @@ def health_check():
         "status": "healthy",
         "component": "active_controller",
         "query_enhancement": ENABLE_QUERY_ENHANCEMENT,
-        "slm_service": SLM_SERVICE_URL
+        "slm_service": SLM_SERVICE_URL,
+        "redis_available": REDIS_AVAILABLE,
+        "http_workers": USE_HTTP_WORKERS,
+        "passive_worker_url": PASSIVE_WORKER_URL
     }
+
+
+def call_workers_via_http(
+    trace_id: str,
+    query_text: str,
+    original_query: str,
+    target_shards: List[str],
+    timestamp_context: Optional[str] = None
+) -> List[ConsensusVote]:
+    """
+    Call passive workers directly via HTTP instead of Redis.
+
+    This enables Cloud Run deployments without Redis/VPC.
+
+    Args:
+        trace_id: Trace ID for logging
+        query_text: Enhanced query for retrieval
+        original_query: Original query for verification
+        target_shards: List of shard IDs to query
+        timestamp_context: Optional timestamp context
+
+    Returns:
+        List of ConsensusVote objects from workers
+    """
+    if not PASSIVE_WORKER_URL:
+        logger.logger.warning("PASSIVE_WORKER_URL not set, cannot call workers via HTTP")
+        return []
+
+    # Support multiple worker URLs (comma-separated)
+    worker_urls = [url.strip() for url in PASSIVE_WORKER_URL.split(",") if url.strip()]
+
+    all_votes = []
+
+    for worker_url in worker_urls:
+        try:
+            # Ensure URL has /process_rfi endpoint
+            endpoint = worker_url.rstrip("/")
+            if not endpoint.endswith("/process_rfi"):
+                endpoint = f"{endpoint}/process_rfi"
+
+            response = requests.post(
+                endpoint,
+                json={
+                    "trace_id": trace_id,
+                    "query_text": query_text,
+                    "original_query": original_query,
+                    "target_shards": target_shards,
+                    "timestamp_context": timestamp_context
+                },
+                timeout=HTTP_WORKER_TIMEOUT
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                votes_data = result.get("votes", [])
+                worker_id = result.get("worker_id", "unknown")
+
+                for vote_data in votes_data:
+                    try:
+                        vote = ConsensusVote(**vote_data)
+                        all_votes.append(vote)
+                        logger.logger.debug(
+                            f"Received vote from {worker_id}: confidence={vote.confidence_score:.2f}"
+                        )
+                    except Exception as e:
+                        logger.logger.warning(f"Failed to parse vote: {e}")
+            else:
+                logger.logger.warning(
+                    f"Worker {worker_url} returned {response.status_code}: {response.text[:200]}"
+                )
+
+        except requests.exceptions.RequestException as e:
+            logger.logger.warning(f"Failed to call worker {worker_url}: {e}")
+
+    logger.logger.info(f"HTTP workers returned {len(all_votes)} votes from {len(worker_urls)} workers")
+    return all_votes
 
 
 def enhance_query_via_slm(query_text: str, timestamp_context: Optional[str] = None) -> dict:
@@ -213,70 +310,85 @@ async def handle_query(request: QueryRequest):
         # 1. L1 Routing - Determine target shards
         target_shards = RouteLogic.get_target_shards(request)
 
-        # 2. CRITICAL FIX: Subscribe to response channel BEFORE broadcasting RFI
-        # Per Redis Pub/Sub semantics, messages are NOT queued for late subscribers.
-        # We must subscribe first to ensure we don't miss any votes.
-        pubsub = redis_client.pubsub()
-        response_channel = f"dpr:responses:{trace_id}"
-        pubsub.subscribe(response_channel)
-
-        # Small delay to ensure subscription is fully active
-        await asyncio.sleep(0.05)
-
-        # 3. Broadcast RFI (Request for Information) to Redis Stream
-        # Per Spec Section 4.2: "A* publishes an RFI message to Redis"
-        # Use ENHANCED query for better retrieval, but keep original for verification
-        rfi_payload = {
-            "trace_id": trace_id,
-            "query_text": enhanced_query,  # Enhanced query for retrieval
-            "original_query": request.query_text,  # Original for SLM verification
-            "target_shards": json.dumps(target_shards),
-            "timestamp_context": request.timestamp_context or ""
-        }
-        redis_client.xadd(RFI_STREAM, rfi_payload)
-        logger.log_event(trace_id, EventType.RFI_BROADCAST, rfi_payload)
-
-        # 4. Gather Votes (L2 + L3) - Wait for Passive Agent responses
-        # Per Spec Section 4.3: "Targeted Passive Agents wake up and ingest the query"
-        start_time = time.time()
+        # 2. Gather Votes - Use HTTP workers or Redis depending on availability
         votes: List[ConsensusVote] = []
 
-        while (time.time() - start_time) < RESPONSE_TIMEOUT:
-            message = pubsub.get_message(ignore_subscribe_messages=True)
-            if message and message.get('data'):
-                try:
-                    # Handle both string and bytes data
-                    data = message['data']
-                    if isinstance(data, bytes):
-                        data = data.decode('utf-8')
-                    vote_data = json.loads(data)
-                    votes.append(ConsensusVote(**vote_data))
+        # Try HTTP workers first (preferred for Cloud Run)
+        if USE_HTTP_WORKERS and PASSIVE_WORKER_URL:
+            logger.logger.info(f"Calling workers via HTTP: {PASSIVE_WORKER_URL}")
+            votes = call_workers_via_http(
+                trace_id=trace_id,
+                query_text=enhanced_query,
+                original_query=request.query_text,
+                target_shards=target_shards,
+                timestamp_context=request.timestamp_context
+            )
+            logger.log_event(trace_id, EventType.RFI_BROADCAST, {
+                "method": "http",
+                "target_shards": target_shards,
+                "votes_received": len(votes)
+            })
 
-                    # Check if we have minimum quorum
-                    if len(votes) >= MIN_VOTES_FOR_CONSENSUS:
-                        # Wait a bit more for additional votes
-                        await asyncio.sleep(0.3)
-                        # Drain any remaining messages
-                        while True:
-                            msg = pubsub.get_message(ignore_subscribe_messages=True)
-                            if not msg or not msg.get('data'):
-                                break
-                            try:
-                                d = msg['data']
-                                if isinstance(d, bytes):
-                                    d = d.decode('utf-8')
-                                votes.append(ConsensusVote(**json.loads(d)))
-                            except (json.JSONDecodeError, TypeError):
-                                pass
-                        break
-                except (json.JSONDecodeError, TypeError) as e:
-                    logger.logger.warning(f"Failed to parse vote: {e}")
+        # Fall back to Redis if HTTP didn't get votes and Redis is available
+        if not votes and REDIS_AVAILABLE and redis_client:
+            logger.logger.info("Falling back to Redis for vote collection")
+
+            # Subscribe to response channel BEFORE broadcasting RFI
+            pubsub = redis_client.pubsub()
+            response_channel = f"dpr:responses:{trace_id}"
+            pubsub.subscribe(response_channel)
+
+            # Small delay to ensure subscription is fully active
             await asyncio.sleep(0.05)
 
-        # Cleanup subscription
-        pubsub.unsubscribe(response_channel)
-        pubsub.close()
-        pubsub = None
+            # Broadcast RFI to Redis Stream
+            rfi_payload = {
+                "trace_id": trace_id,
+                "query_text": enhanced_query,
+                "original_query": request.query_text,
+                "target_shards": json.dumps(target_shards),
+                "timestamp_context": request.timestamp_context or ""
+            }
+            redis_client.xadd(RFI_STREAM, rfi_payload)
+            logger.log_event(trace_id, EventType.RFI_BROADCAST, {
+                "method": "redis",
+                **rfi_payload
+            })
+
+            # Wait for votes via Redis Pub/Sub
+            start_time = time.time()
+            while (time.time() - start_time) < RESPONSE_TIMEOUT:
+                message = pubsub.get_message(ignore_subscribe_messages=True)
+                if message and message.get('data'):
+                    try:
+                        data = message['data']
+                        if isinstance(data, bytes):
+                            data = data.decode('utf-8')
+                        vote_data = json.loads(data)
+                        votes.append(ConsensusVote(**vote_data))
+
+                        if len(votes) >= MIN_VOTES_FOR_CONSENSUS:
+                            await asyncio.sleep(0.3)
+                            while True:
+                                msg = pubsub.get_message(ignore_subscribe_messages=True)
+                                if not msg or not msg.get('data'):
+                                    break
+                                try:
+                                    d = msg['data']
+                                    if isinstance(d, bytes):
+                                        d = d.decode('utf-8')
+                                    votes.append(ConsensusVote(**json.loads(d)))
+                                except (json.JSONDecodeError, TypeError):
+                                    pass
+                            break
+                    except (json.JSONDecodeError, TypeError) as e:
+                        logger.logger.warning(f"Failed to parse vote: {e}")
+                await asyncio.sleep(0.05)
+
+            # Cleanup subscription
+            pubsub.unsubscribe(response_channel)
+            pubsub.close()
+            pubsub = None
 
         # Handle no votes case
         if not votes:

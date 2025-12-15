@@ -129,9 +129,9 @@ if [ -f "./deploy_commands.sh" ]; then
     chmod +x deploy_commands.sh
     ./deploy_commands.sh
 else
-    echo "No deploy_commands.sh found. Deploying manually..."
+    echo "No deploy_commands.sh found. Deploying manually (HTTP mode - no Redis)..."
 
-    # Step 4a: Deploy SLM Service first (passive workers depend on it)
+    # Step 4a: Deploy SLM Service first (other services depend on it)
     echo "Deploying SLM Service..."
     gcloud run deploy dpr-slm-service \
         --image="${IMAGE_URI}" \
@@ -141,36 +141,39 @@ else
         --cpu=2 \
         --timeout=300 \
         --min-instances=1 \
-        --no-allow-unauthenticated \
+        --allow-unauthenticated \
         --quiet || true
 
     # Get SLM service URL
     SLM_SERVICE_URL=$(gcloud run services describe dpr-slm-service --region=$REGION --format='value(status.url)' 2>/dev/null || echo "")
     echo "SLM Service URL: $SLM_SERVICE_URL"
 
-    # Step 4b: Deploy Active Controller (with SLM for query enhancement)
+    # Step 4b: Deploy Passive Workers FIRST (Active Controller needs their URL)
+    echo "Deploying Passive Workers..."
+    gcloud run deploy dpr-passive-worker \
+        --image="${IMAGE_URI}" \
+        --region="${REGION}" \
+        --set-env-vars="ROLE=passive,HISTORY_BUCKET=${HISTORY_BUCKET},HISTORY_SCALE=${BENCHMARK_SCALE},SLM_SERVICE_URL=${SLM_SERVICE_URL}" \
+        --memory=2Gi \
+        --min-instances=1 \
+        --timeout=300 \
+        --allow-unauthenticated \
+        --quiet || true
+
+    # Get Passive Worker URL
+    PASSIVE_WORKER_URL=$(gcloud run services describe dpr-passive-worker --region=$REGION --format='value(status.url)' 2>/dev/null || echo "")
+    echo "Passive Worker URL: $PASSIVE_WORKER_URL"
+
+    # Step 4c: Deploy Active Controller (with HTTP worker URL instead of Redis)
     echo "Deploying Active Controller..."
     gcloud run deploy dpr-active-controller \
         --image="${IMAGE_URI}" \
         --region="${REGION}" \
         --allow-unauthenticated \
-        --set-env-vars="ROLE=active,HISTORY_BUCKET=${HISTORY_BUCKET},HISTORY_SCALE=${BENCHMARK_SCALE},SLM_SERVICE_URL=${SLM_SERVICE_URL},ENABLE_QUERY_ENHANCEMENT=true" \
+        --set-env-vars="ROLE=active,HISTORY_BUCKET=${HISTORY_BUCKET},HISTORY_SCALE=${BENCHMARK_SCALE},SLM_SERVICE_URL=${SLM_SERVICE_URL},ENABLE_QUERY_ENHANCEMENT=true,PASSIVE_WORKER_URL=${PASSIVE_WORKER_URL},USE_HTTP_WORKERS=true" \
         --memory=2Gi \
         --timeout=300 \
         --quiet || true
-
-    # Step 4c: Deploy Passive Workers (with SLM_SERVICE_URL)
-    if [ -n "$SLM_SERVICE_URL" ]; then
-        echo "Deploying Passive Workers..."
-        gcloud run deploy dpr-passive-worker \
-            --image="${IMAGE_URI}" \
-            --region="${REGION}" \
-            --set-env-vars="ROLE=passive,HISTORY_BUCKET=${HISTORY_BUCKET},HISTORY_SCALE=${BENCHMARK_SCALE},SLM_SERVICE_URL=${SLM_SERVICE_URL}" \
-            --memory=2Gi \
-            --min-instances=3 \
-            --no-allow-unauthenticated \
-            --quiet || true
-    fi
 fi
 
 # --- Step 5: Get Controller URL ---
