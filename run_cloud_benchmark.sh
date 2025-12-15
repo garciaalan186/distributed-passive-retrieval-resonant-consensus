@@ -18,6 +18,8 @@ mkdir -p $RESULTS_DIR
 BENCHMARK_SCALE="${BENCHMARK_SCALE:-medium}"
 EMBEDDING_MODEL="${EMBEDDING_MODEL:-all-MiniLM-L6-v2}"
 REGION="${REGION:-us-central1}"
+DEBUG_BREAKPOINTS="${DEBUG_BREAKPOINTS:-false}"
+DEBUG_PAUSE_SECONDS="${DEBUG_PAUSE_SECONDS:-2}"
 
 echo "=== DPR-RC Cloud Benchmark Start ==="
 echo "NOTE: All Python/ML work runs in Google Cloud, not locally."
@@ -28,7 +30,15 @@ echo "Project: $PROJECT_ID"
 echo "Scale: $BENCHMARK_SCALE"
 echo "Embedding Model: $EMBEDDING_MODEL"
 echo "Region: $REGION"
+echo "Debug Mode: $DEBUG_BREAKPOINTS (pause: ${DEBUG_PAUSE_SECONDS}s)"
 echo ""
+
+if [ "$DEBUG_BREAKPOINTS" = "true" ]; then
+    echo "🔍 DEBUG MODE ENABLED"
+    echo "   Each step in the pipeline will log detailed output."
+    echo "   Use 'gcloud logs tail' to watch the debug output in real-time."
+    echo ""
+fi
 
 # Set bucket name based on project ID for uniqueness
 HISTORY_BUCKET="dpr-history-data-${PROJECT_ID}"
@@ -153,7 +163,7 @@ else
     gcloud run deploy dpr-passive-worker \
         --image="${IMAGE_URI}" \
         --region="${REGION}" \
-        --set-env-vars="ROLE=passive,HISTORY_BUCKET=${HISTORY_BUCKET},HISTORY_SCALE=${BENCHMARK_SCALE},SLM_SERVICE_URL=${SLM_SERVICE_URL}" \
+        --set-env-vars="ROLE=passive,HISTORY_BUCKET=${HISTORY_BUCKET},HISTORY_SCALE=${BENCHMARK_SCALE},SLM_SERVICE_URL=${SLM_SERVICE_URL},DEBUG_BREAKPOINTS=${DEBUG_BREAKPOINTS},DEBUG_PAUSE_SECONDS=${DEBUG_PAUSE_SECONDS}" \
         --memory=2Gi \
         --min-instances=1 \
         --timeout=300 \
@@ -170,7 +180,7 @@ else
         --image="${IMAGE_URI}" \
         --region="${REGION}" \
         --allow-unauthenticated \
-        --set-env-vars="ROLE=active,HISTORY_BUCKET=${HISTORY_BUCKET},HISTORY_SCALE=${BENCHMARK_SCALE},SLM_SERVICE_URL=${SLM_SERVICE_URL},ENABLE_QUERY_ENHANCEMENT=true,PASSIVE_WORKER_URL=${PASSIVE_WORKER_URL},USE_HTTP_WORKERS=true" \
+        --set-env-vars="ROLE=active,HISTORY_BUCKET=${HISTORY_BUCKET},HISTORY_SCALE=${BENCHMARK_SCALE},SLM_SERVICE_URL=${SLM_SERVICE_URL},ENABLE_QUERY_ENHANCEMENT=true,PASSIVE_WORKER_URL=${PASSIVE_WORKER_URL},USE_HTTP_WORKERS=true,DEBUG_BREAKPOINTS=${DEBUG_BREAKPOINTS},DEBUG_PAUSE_SECONDS=${DEBUG_PAUSE_SECONDS}" \
         --memory=2Gi \
         --timeout=300 \
         --quiet || true
@@ -191,6 +201,16 @@ else
     echo ""
     echo "--- Step 6: Running Benchmark (in Cloud Build) ---"
     echo "Executing benchmark from cloud against deployed services..."
+
+    if [ "$DEBUG_BREAKPOINTS" = "true" ]; then
+        echo ""
+        echo "📋 To watch debug logs in real-time, open another terminal and run:"
+        echo "   gcloud logging read 'resource.type=cloud_run_revision AND (resource.labels.service_name=dpr-active-controller OR resource.labels.service_name=dpr-passive-worker)' --project=$PROJECT_ID --format='value(textPayload)' --freshness=5m | grep -A50 'DEBUG BREAKPOINT'"
+        echo ""
+        echo "Or stream logs continuously:"
+        echo "   gcloud alpha logging tail 'resource.type=cloud_run_revision' --project=$PROJECT_ID --format='value(textPayload)' 2>/dev/null | grep --line-buffered -E 'DEBUG|BREAKPOINT|Request|Response|Vote|Consensus'"
+        echo ""
+    fi
 
     # Create cloudbuild for benchmark execution
     cat > /tmp/cloudbuild-benchmark.yaml << BENCHEOF
@@ -264,3 +284,22 @@ echo "=== DPR-RC Cloud Benchmark Complete ==="
 echo ""
 echo "To re-run benchmarks, simply run ./run_cloud_benchmark.sh again."
 echo "The script will reuse existing GCS data and redeploy services."
+echo ""
+echo "Debug Mode Usage:"
+echo "  DEBUG_BREAKPOINTS=true ./run_cloud_benchmark.sh"
+echo ""
+echo "  This enables step-by-step logging at each pipeline edge:"
+echo "    1. Query Received (Client → Controller)"
+echo "    2. Query Enhancement (Controller → SLM)"
+echo "    3. L1 Routing (Controller → Router)"
+echo "    4. HTTP Worker Call (Controller → Worker)"
+echo "    5. Shard Loading (Worker → GCS)"
+echo "    6. Document Retrieval (Worker → ChromaDB)"
+echo "    7. L2 Verification (Worker → SLM)"
+echo "    8. L3 Quadrant Calculation"
+echo "    9. Vote Creation (Worker → Controller)"
+echo "   10. Consensus Calculation"
+echo "   11. Final Response (Controller → Client)"
+echo ""
+echo "  View debug logs with:"
+echo "    ./view_debug_logs.sh"

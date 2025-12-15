@@ -17,6 +17,12 @@ from .models import (
     ConsensusVote, RetrievalResult
 )
 from .logging_utils import StructuredLogger
+from .debug_utils import (
+    debug_query_received, debug_query_enhancement, debug_routing,
+    debug_http_worker_call, debug_http_worker_response,
+    debug_consensus_calculation, debug_final_response,
+    debug_log, DEBUG_BREAKPOINTS
+)
 
 # Configuration
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
@@ -171,15 +177,20 @@ def call_workers_via_http(
             if not endpoint.endswith("/process_rfi"):
                 endpoint = f"{endpoint}/process_rfi"
 
+            request_payload = {
+                "trace_id": trace_id,
+                "query_text": query_text,
+                "original_query": original_query,
+                "target_shards": target_shards,
+                "timestamp_context": timestamp_context
+            }
+
+            # DEBUG: HTTP worker call
+            debug_http_worker_call(trace_id, endpoint, request_payload)
+
             response = requests.post(
                 endpoint,
-                json={
-                    "trace_id": trace_id,
-                    "query_text": query_text,
-                    "original_query": original_query,
-                    "target_shards": target_shards,
-                    "timestamp_context": timestamp_context
-                },
+                json=request_payload,
                 timeout=HTTP_WORKER_TIMEOUT
             )
 
@@ -187,6 +198,12 @@ def call_workers_via_http(
                 result = response.json()
                 votes_data = result.get("votes", [])
                 worker_id = result.get("worker_id", "unknown")
+
+                # DEBUG: HTTP worker response
+                debug_http_worker_response(
+                    trace_id, endpoint, len(votes_data),
+                    {"worker_id": worker_id, "votes": votes_data, "shards": result.get("shards_queried", [])}
+                )
 
                 for vote_data in votes_data:
                     try:
@@ -198,6 +215,9 @@ def call_workers_via_http(
                     except Exception as e:
                         logger.logger.warning(f"Failed to parse vote: {e}")
             else:
+                # DEBUG: Worker error
+                debug_log("ActiveController", f"Worker error: {response.status_code}",
+                         {"url": worker_url, "response": response.text[:500]})
                 logger.logger.warning(
                     f"Worker {worker_url} returned {response.status_code}: {response.text[:200]}"
                 )
@@ -290,6 +310,9 @@ async def handle_query(request: QueryRequest):
     trace_id = request.trace_id
     logger.log_event(trace_id, EventType.SYSTEM_INIT, request.model_dump())
 
+    # DEBUG: Query received
+    debug_query_received(trace_id, request.query_text, request.timestamp_context)
+
     pubsub = None
     try:
         # 0. Query Enhancement via SLM (improves retrieval quality)
@@ -300,6 +323,16 @@ async def handle_query(request: QueryRequest):
         )
         enhanced_query = enhancement_result["enhanced_query"]
 
+        # DEBUG: Query enhancement result
+        debug_query_enhancement(
+            trace_id,
+            original=request.query_text,
+            enhanced=enhanced_query,
+            expansions=enhancement_result.get("expansions", []),
+            used=enhancement_result.get("enhancement_used", False),
+            time_ms=enhancement_result.get("inference_time_ms", 0)
+        )
+
         logger.log_event(trace_id, EventType.SYSTEM_INIT, {
             "original_query": request.query_text,
             "enhanced_query": enhanced_query,
@@ -309,6 +342,9 @@ async def handle_query(request: QueryRequest):
 
         # 1. L1 Routing - Determine target shards
         target_shards = RouteLogic.get_target_shards(request)
+
+        # DEBUG: Routing decision
+        debug_routing(trace_id, enhanced_query, target_shards)
 
         # 2. Gather Votes - Use HTTP workers or Redis depending on availability
         votes: List[ConsensusVote] = []
@@ -394,6 +430,11 @@ async def handle_query(request: QueryRequest):
         if not votes:
             logger.log_event(trace_id, EventType.HALLUCINATION_DETECTED,
                            {"reason": "No votes received"})
+            # DEBUG: No votes received
+            debug_final_response(
+                trace_id, status="FAILED", confidence=0.0,
+                answer="No consensus reached.", sources=[]
+            )
             return RetrievalResult(
                 trace_id=trace_id,
                 final_answer="No consensus reached.",
@@ -457,6 +498,15 @@ async def handle_query(request: QueryRequest):
                         "metrics": {"mean": mean_score, "std": std_score, "vote_count": vote_count}
                     })
 
+        # DEBUG: Consensus calculation results
+        debug_consensus_calculation(
+            trace_id,
+            votes_count=len(votes),
+            unique_candidates=len(unique_candidates),
+            consensus_set=consensus_set,
+            perspectival_set=perspectival_set
+        )
+
         # 6. Superposition Injection - Per Spec Section 4.5
         # "A* injects a Superposition Object into its context, containing both
         # the Consensus Truth and distinct Perspectives"
@@ -491,6 +541,13 @@ async def handle_query(request: QueryRequest):
             "num_consensus": len(consensus_set),
             "num_perspectival": len(perspectival_set)
         })
+
+        # DEBUG: Final response
+        status = "SUCCESS" if confidence > 0 else "NO_DATA"
+        debug_final_response(
+            trace_id, status=status, confidence=confidence,
+            answer=final_answer, sources=[v.worker_id for v in votes]
+        )
 
         return RetrievalResult(
             trace_id=trace_id,

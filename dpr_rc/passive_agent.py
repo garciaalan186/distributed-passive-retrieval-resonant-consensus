@@ -50,6 +50,11 @@ from .embedding_utils import (
     DEFAULT_EMBEDDING_MODEL,
     get_model_folder_name
 )
+from .debug_utils import (
+    debug_rfi_received, debug_shard_loading, debug_retrieval,
+    debug_l2_verification, debug_quadrant_calculation, debug_vote_created,
+    debug_worker_no_results, debug_log, DEBUG_BREAKPOINTS
+)
 
 # Configuration
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
@@ -187,20 +192,43 @@ class PassiveWorker:
 
             # Strategy 1: Pre-computed embeddings from GCS
             gcs_store = self._get_gcs_store()
+            strategy_used = None
+            doc_count = 0
+
             if gcs_store and not loaded:
                 loaded = self._load_from_gcs_embeddings(shard_id, collection, gcs_store)
+                if loaded:
+                    strategy_used = "GCS Pre-computed Embeddings"
+                    doc_count = collection.count()
 
             # Strategy 2: Raw JSON from GCS (compute embeddings locally)
             if gcs_store and not loaded:
                 loaded = self._load_from_gcs_raw(shard_id, collection, gcs_store)
+                if loaded:
+                    strategy_used = "GCS Raw JSON + Local Embedding"
+                    doc_count = collection.count()
 
             # Strategy 3: Redis cache
             if not loaded:
                 loaded = self._load_from_redis_cache(shard_id, collection)
+                if loaded:
+                    strategy_used = "Redis Cache"
+                    doc_count = collection.count()
 
             # Strategy 4: Fallback generated data
             if not loaded:
                 loaded = self._generate_fallback_data(shard_id, collection)
+                if loaded:
+                    strategy_used = "Fallback Generated"
+                    doc_count = collection.count()
+
+            # DEBUG: Shard loading result
+            debug_shard_loading(
+                WORKER_ID, shard_id,
+                strategy=strategy_used or "FAILED",
+                doc_count=doc_count,
+                success=loaded
+            )
 
             if loaded:
                 self._loaded_shards[shard_id] = collection
@@ -537,16 +565,28 @@ class PassiveWorker:
             )
 
             if not results['documents'] or not results['documents'][0]:
+                # DEBUG: No retrieval results
+                debug_retrieval(WORKER_ID, shard_id, query_text, None, 0.0)
                 return None
 
-            return {
+            result = {
                 "content": results['documents'][0][0],
                 "id": results['ids'][0][0],
                 "metadata": results['metadatas'][0][0] if results['metadatas'] else {},
                 "distance": results['distances'][0][0] if results.get('distances') else 0.0
             }
+
+            # DEBUG: Retrieval successful
+            debug_retrieval(
+                WORKER_ID, shard_id, query_text, result,
+                distance=result.get("distance", 0.0)
+            )
+
+            return result
         except Exception as e:
             logger.logger.error(f"Retrieval error: {e}")
+            # DEBUG: Retrieval error
+            debug_log(f"PassiveWorker[{WORKER_ID}]", f"Retrieval error: {e}")
             return None
 
     def verify_l2(self, content: str, query: str, depth: int = 0) -> float:
@@ -584,17 +624,35 @@ class PassiveWorker:
                     f"reasoning={result.get('reasoning', '')[:100]}"
                 )
 
+                # DEBUG: L2 verification via SLM
+                debug_l2_verification(
+                    WORKER_ID, query, content, confidence,
+                    method="SLM", slm_response=result
+                )
+
                 return max(0.0, min(1.0, confidence))
             else:
                 logger.logger.warning(
                     f"SLM service returned {response.status_code}, "
                     f"falling back to heuristic"
                 )
-                return self._verify_l2_fallback(content, query, depth)
+                fallback_confidence = self._verify_l2_fallback(content, query, depth)
+                # DEBUG: L2 verification via fallback
+                debug_l2_verification(
+                    WORKER_ID, query, content, fallback_confidence,
+                    method="Fallback (SLM returned non-200)"
+                )
+                return fallback_confidence
 
         except requests.exceptions.RequestException as e:
             logger.logger.warning(f"SLM service unavailable: {e}, using fallback")
-            return self._verify_l2_fallback(content, query, depth)
+            fallback_confidence = self._verify_l2_fallback(content, query, depth)
+            # DEBUG: L2 verification via fallback
+            debug_l2_verification(
+                WORKER_ID, query, content, fallback_confidence,
+                method=f"Fallback (SLM unavailable: {type(e).__name__})"
+            )
+            return fallback_confidence
 
     def _verify_l2_fallback(self, content: str, query: str, depth: int = 0) -> float:
         """
@@ -650,6 +708,9 @@ class PassiveWorker:
         ts_context = rfi_data.get('timestamp_context', '')
         target_shards_str = rfi_data.get('target_shards', '[]')
 
+        # DEBUG: RFI received
+        debug_rfi_received(trace_id, WORKER_ID, rfi_data)
+
         # Parse target shards - support both string and list formats
         try:
             if isinstance(target_shards_str, list):
@@ -665,6 +726,8 @@ class PassiveWorker:
         if not target_shards or "broadcast" in target_shards:
             target_shards = [f"shard_{self.epoch_year}"]
 
+        debug_log(f"PassiveWorker[{WORKER_ID}]", f"Target shards: {target_shards}")
+
         votes = []
 
         # Process each target shard
@@ -678,6 +741,7 @@ class PassiveWorker:
 
             if not doc:
                 logger.logger.debug(f"No relevant history in {shard_id} for: {query_text[:50]}...")
+                debug_worker_no_results(WORKER_ID, trace_id, shard_id, "No relevant documents found")
                 continue
 
             # L2 Verification using ORIGINAL query (SLM judges against user's intent)
@@ -686,22 +750,33 @@ class PassiveWorker:
 
             if confidence < 0.3:
                 logger.logger.debug(f"Confidence {confidence:.2f} below threshold")
+                debug_worker_no_results(
+                    WORKER_ID, trace_id, shard_id,
+                    f"Confidence {confidence:.2f} below 0.3 threshold"
+                )
                 continue
 
             # L3 Semantic quadrant
             quadrant = self.calculate_quadrant(doc['content'], confidence)
+            content_hash = logger.hash_payload(doc['content'])
+
+            # DEBUG: Quadrant calculation
+            debug_quadrant_calculation(WORKER_ID, content_hash, confidence, quadrant)
 
             # Cast vote
             vote = ConsensusVote(
                 trace_id=trace_id,
                 worker_id=WORKER_ID,
-                content_hash=logger.hash_payload(doc['content']),
+                content_hash=content_hash,
                 confidence_score=confidence,
                 semantic_quadrant=quadrant,
                 content_snippet=doc['content'][:500]
             )
 
             votes.append(vote)
+
+            # DEBUG: Vote created
+            debug_vote_created(WORKER_ID, trace_id, vote.model_dump())
 
             # Also publish to Redis if available (for hybrid mode)
             try:
