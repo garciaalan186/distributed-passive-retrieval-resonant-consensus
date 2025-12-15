@@ -103,6 +103,7 @@ steps:
     env:
       - 'HISTORY_BUCKET=${HISTORY_BUCKET}'
       - 'TOKENIZERS_PARALLELISM=false'
+    dir: '/app'
     id: 'generate-data'
     waitFor: ['push']
 
@@ -199,6 +200,7 @@ steps:
       - 'HISTORY_BUCKET=${HISTORY_BUCKET}'
       - 'HISTORY_SCALE=${BENCHMARK_SCALE}'
       - 'TOKENIZERS_PARALLELISM=false'
+    dir: '/app'
     id: 'run-benchmark'
 
 timeout: '1800s'
