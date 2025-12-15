@@ -3,6 +3,13 @@ DPR-RC Research-Grade Benchmark Suite
 Implements peer-review-ready evaluation with complete audit trails
 """
 
+# Python 3.9 compatibility: patch importlib.metadata for chromadb
+import importlib.metadata
+if not hasattr(importlib.metadata, 'packages_distributions'):
+    def _packages_distributions():
+        return {}
+    importlib.metadata.packages_distributions = _packages_distributions
+
 import os
 import json
 import time

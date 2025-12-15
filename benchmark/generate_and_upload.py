@@ -31,6 +31,14 @@ Usage:
     --skip-embeddings: Only upload raw JSON, skip embedding computation
 """
 
+# Python 3.9 compatibility: patch importlib.metadata for chromadb
+import importlib.metadata
+if not hasattr(importlib.metadata, 'packages_distributions'):
+    # Provide a fallback for Python < 3.10
+    def _packages_distributions():
+        return {}
+    importlib.metadata.packages_distributions = _packages_distributions
+
 import os
 import sys
 import json
