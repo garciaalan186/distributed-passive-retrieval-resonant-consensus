@@ -150,5 +150,32 @@ python3 -m benchmark.research_benchmark
 echo ""
 echo "--- Step 8: Results ---"
 echo "Results available in $RESULTS_DIR/"
+
+# 9. Cleanup - Delete Cloud Run services to avoid charges
+echo ""
+echo "--- Step 9: Cleanup (Deleting Cloud Run Services) ---"
+echo "Deleting Cloud Run services to avoid ongoing charges..."
+echo "(GCS data is preserved for future runs)"
+echo ""
+
+# Delete services (ignore errors if they don't exist)
+gcloud run services delete dpr-active-controller --region=$REGION --quiet 2>/dev/null || true
+gcloud run services delete dpr-passive-workers --region=$REGION --quiet 2>/dev/null || true
+gcloud run services delete dpr-baseline-rag --region=$REGION --quiet 2>/dev/null || true
+
+# Also delete the Memorystore Redis instance if it exists (expensive!)
+REDIS_INSTANCE="dpr-redis"
+if gcloud redis instances describe $REDIS_INSTANCE --region=$REGION >/dev/null 2>&1; then
+    echo "Deleting Redis instance (this takes a few minutes)..."
+    gcloud redis instances delete $REDIS_INSTANCE --region=$REGION --quiet --async
+    echo "Redis deletion initiated (async)"
+fi
+
+echo ""
+echo "✓ Cloud Run services deleted"
+echo "✓ GCS bucket gs://${HISTORY_BUCKET}/ preserved (raw data + embeddings)"
 echo ""
 echo "=== DPR-RC Cloud Benchmark Complete ==="
+echo ""
+echo "To re-run benchmarks, simply run ./run_cloud_benchmark.sh again."
+echo "The script will reuse existing GCS data and redeploy services."
