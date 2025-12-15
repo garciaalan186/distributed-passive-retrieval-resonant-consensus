@@ -347,87 +347,47 @@ class ResearchBenchmarkSuite:
             }
         """
         try:
-            # Build a comprehensive prompt for the SLM
-            glossary_terms = list(glossary.get('physics', {}).get('particles', {}).keys())[:20]
-            glossary_phenomena = list(glossary.get('physics', {}).get('phenomena', {}).keys())[:20]
+            # Extract valid terms from glossary to send to SLM
+            valid_terms = []
 
-            # Get domain terms from glossary
-            domain_terms = []
+            # Add physics terms
+            if 'physics' in glossary:
+                valid_terms.extend(list(glossary.get('physics', {}).get('particles', {}).keys())[:20])
+                valid_terms.extend(list(glossary.get('physics', {}).get('phenomena', {}).keys())[:20])
+
+            # Add domain terms
             for domain_name, domain_data in glossary.get('domains', {}).items():
-                domain_terms.extend(list(domain_data.get('concepts', {}).keys())[:10])
+                valid_terms.extend(list(domain_data.get('concepts', {}).keys())[:10])
 
-            valid_terms = glossary_terms + glossary_phenomena + domain_terms[:30]
+            # Limit to reasonable size (SLM will sample further)
+            valid_terms = valid_terms[:50]
 
-            prompt = f"""You are evaluating a retrieval system's response for hallucinations.
-
-QUERY: {query}
-
-SYSTEM RESPONSE: {system_response}
-
-SYSTEM CONFIDENCE: {confidence:.2f} (0=uncertain, 1=certain)
-
-VALID TERMS (from dataset glossary):
-{', '.join(valid_terms[:40])}
-
-GROUND TRUTH CONTEXT:
-- Expected consensus claims: {ground_truth.get('expected_consensus', [])}
-- Expected disputed points: {ground_truth.get('expected_disputed', [])}
-
-TASK:
-Determine if the system response contains hallucinations. Consider:
-
-1. FABRICATED FACTS: Does it make claims not supported by ground truth?
-2. INVALID TERMS: Does it use terms/concepts not in the valid glossary?
-3. FALSE CERTAINTY: Does it present disputed information as definitive fact?
-4. APPROPRIATE UNCERTAINTY: If confidence < 0.9 or response mentions "perspectives"/"mixed",
-   presenting alternatives is VALID, not hallucination.
-
-IMPORTANT:
-- Common words like "The", "In", "No", "Yes" are NOT hallucinations
-- If system shows uncertainty, multiple perspectives are acceptable
-- Only flag terms that are completely fabricated AND presented as fact
-- Phonotactic terms from glossary are valid even if unfamiliar
-
-Respond in JSON format:
-{{
-    "has_hallucination": true/false,
-    "hallucination_type": "fabricated_fact" | "invalid_term" | "false_certainty" | null,
-    "explanation": "brief explanation",
-    "severity": "high" | "medium" | "low" | "none",
-    "flagged_content": ["specific", "problematic", "parts"]
-}}"""
-
-            # Call SLM service
+            # Call SLM service with proper request structure
             response = requests.post(
-                f"{self.slm_service_url}/verify",
-                json={"prompt": prompt},
+                f"{self.slm_service_url}/check_hallucination",
+                json={
+                    "query": query,
+                    "system_response": system_response,
+                    "ground_truth": ground_truth,
+                    "valid_terms": valid_terms,
+                    "confidence": confidence
+                },
                 timeout=self.slm_timeout
             )
 
             if response.status_code == 200:
+                # Parse the HallucinationCheckResponse
                 result = response.json()
-                # Try to parse JSON from SLM response
-                slm_text = result.get("response", "{}")
-
-                # Extract JSON from response (SLM might add explanation text)
-                import re
-                json_match = re.search(r'\{[\s\S]*\}', slm_text)
-                if json_match:
-                    slm_judgment = json.loads(json_match.group())
-                    return slm_judgment
-                else:
-                    # Fallback: try to parse heuristically
-                    has_hallucination = "true" in slm_text.lower() and "has_hallucination" in slm_text.lower()
-                    return {
-                        "has_hallucination": has_hallucination,
-                        "hallucination_type": "unknown",
-                        "explanation": slm_text[:200],
-                        "severity": "medium" if has_hallucination else "none",
-                        "flagged_content": []
-                    }
+                return {
+                    "has_hallucination": result.get("has_hallucination", False),
+                    "hallucination_type": result.get("hallucination_type"),
+                    "explanation": result.get("explanation", ""),
+                    "severity": result.get("severity", "none"),
+                    "flagged_content": result.get("flagged_content", [])
+                }
             else:
                 # SLM service failed, fall back to conservative approach
-                print(f"SLM hallucination detection failed: {response.status_code}")
+                print(f"SLM hallucination detection failed: HTTP {response.status_code}")
                 return self._fallback_hallucination_detection(
                     system_response, glossary, confidence
                 )

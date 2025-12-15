@@ -66,6 +66,27 @@ class EnhanceQueryResponse(BaseModel):
     inference_time_ms: float
 
 
+class HallucinationCheckRequest(BaseModel):
+    """Request for hallucination detection"""
+    query: str
+    system_response: str
+    ground_truth: dict
+    valid_terms: list[str]
+    confidence: float
+    trace_id: Optional[str] = None
+
+
+class HallucinationCheckResponse(BaseModel):
+    """Response from hallucination detection"""
+    has_hallucination: bool
+    hallucination_type: Optional[str] = None  # "fabricated_fact" | "invalid_term" | "false_certainty"
+    explanation: str
+    severity: str  # "high" | "medium" | "low" | "none"
+    flagged_content: list[str]
+    model_id: str
+    inference_time_ms: float
+
+
 def get_query_enhancement_prompt(query: str, timestamp_context: Optional[str] = None) -> str:
     """
     Construct a prompt to enhance/expand the query for better retrieval.
@@ -117,6 +138,78 @@ Instructions:
 
 Respond in this exact JSON format:
 {{"confidence": <0.0-1.0>, "supports_query": <true/false>, "reasoning": "<brief explanation>"}}
+
+Your response (JSON only):"""
+
+
+def get_hallucination_check_prompt(
+    query: str,
+    system_response: str,
+    ground_truth: dict,
+    valid_terms: list[str],
+    confidence: float
+) -> str:
+    """
+    Construct the hallucination detection prompt for the SLM.
+
+    Asks the model to evaluate if the system response contains
+    hallucinated information given the query, ground truth, and valid terms.
+    """
+    # Limit valid terms to avoid token overflow (Qwen2-0.5B has limited context)
+    terms_sample = ', '.join(valid_terms[:50]) if len(valid_terms) > 50 else ', '.join(valid_terms)
+
+    expected_consensus = ground_truth.get('expected_consensus', [])
+    expected_disputed = ground_truth.get('expected_disputed', [])
+
+    return f"""You are evaluating a retrieval system for hallucinations.
+
+QUERY: {query}
+
+SYSTEM RESPONSE: {system_response}
+
+SYSTEM CONFIDENCE: {confidence:.2f} (0=uncertain, 1=certain)
+
+VALID TERMS (from dataset glossary): {terms_sample}
+
+GROUND TRUTH:
+- Expected consensus: {expected_consensus}
+- Expected disputed points: {expected_disputed}
+
+TASK: Determine if the system response contains hallucinations.
+
+Consider these hallucination types:
+1. FABRICATED FACTS: Claims not supported by ground truth
+2. INVALID TERMS: Terms/concepts not in the valid glossary
+3. FALSE CERTAINTY: Disputed info presented as definitive fact
+
+IMPORTANT RULES:
+- Common words like "The", "In", "No", "Yes", "Research" are NOT hallucinations
+- If confidence < 0.9 OR response mentions "perspectives"/"mixed"/"uncertain", presenting alternatives is VALID
+- Only flag completely fabricated terms AND presented as fact
+- Terms from the glossary are valid even if they look unfamiliar
+
+EXAMPLES:
+
+Good (no hallucination):
+Query: "What is Blarkon status?"
+Response: "Blarkon research shows mixed results. Some perspectives indicate decay, others show stability."
+Valid terms: ["Blarkon", "decay", "stability"]
+→ No hallucination (uncertainty + all terms valid)
+
+Bad (hallucination):
+Query: "What is Blarkon status?"
+Response: "Zynthium interference was definitively solved using quantum entanglement."
+Valid terms: ["Blarkon", "decay"]
+→ YES - "Zynthium" not in glossary, "quantum entanglement" not in alternate physics
+
+Respond in this exact JSON format:
+{{
+  "has_hallucination": true/false,
+  "hallucination_type": "fabricated_fact" | "invalid_term" | "false_certainty" | null,
+  "explanation": "brief explanation of decision",
+  "severity": "high" | "medium" | "low" | "none",
+  "flagged_content": ["specific", "problematic", "terms"]
+}}
 
 Your response (JSON only):"""
 
@@ -487,6 +580,137 @@ def enhance_query_endpoint(request: EnhanceQueryRequest):
             model_id=SLM_MODEL,
             inference_time_ms=0.0
         )
+
+
+@app.post("/check_hallucination", response_model=HallucinationCheckResponse)
+def check_hallucination_endpoint(request: HallucinationCheckRequest):
+    """
+    Check if a system response contains hallucinations.
+
+    Called by benchmark suite to evaluate response quality.
+    Uses the SLM to make semantic judgments about whether the
+    response contains fabricated facts, invalid terms, or false certainty.
+
+    This is more sophisticated than string matching - the SLM
+    understands context, uncertainty, and when alternatives are valid.
+    """
+    global _model, _tokenizer
+
+    if _model is None or _tokenizer is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+
+    try:
+        start_time = time.time()
+
+        # Generate prompt
+        prompt = get_hallucination_check_prompt(
+            query=request.query,
+            system_response=request.system_response,
+            ground_truth=request.ground_truth,
+            valid_terms=request.valid_terms,
+            confidence=request.confidence
+        )
+
+        # Tokenize
+        messages = [{"role": "user", "content": prompt}]
+        text = _tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+        inputs = _tokenizer([text], return_tensors="pt").to(DEVICE)
+
+        # Generate
+        with torch.no_grad():
+            outputs = _model.generate(
+                **inputs,
+                max_new_tokens=MAX_NEW_TOKENS,
+                temperature=0.1,  # Low temperature for consistency
+                do_sample=True,
+                pad_token_id=_tokenizer.eos_token_id
+            )
+
+        # Decode
+        generated_ids = [
+            output_ids[len(input_ids):]
+            for input_ids, output_ids in zip(inputs.input_ids, outputs)
+        ]
+        response_text = _tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
+
+        inference_time_ms = (time.time() - start_time) * 1000
+
+        # Parse JSON from response
+        result = _parse_hallucination_response(response_text)
+
+        return HallucinationCheckResponse(
+            has_hallucination=result["has_hallucination"],
+            hallucination_type=result.get("hallucination_type"),
+            explanation=result["explanation"],
+            severity=result["severity"],
+            flagged_content=result["flagged_content"],
+            model_id=SLM_MODEL,
+            inference_time_ms=inference_time_ms
+        )
+
+    except Exception as e:
+        # On error, return conservative fallback
+        print(f"Error in hallucination check: {e}")
+        return HallucinationCheckResponse(
+            has_hallucination=False,  # Conservative: don't flag without confidence
+            hallucination_type=None,
+            explanation=f"Error during check: {str(e)}",
+            severity="none",
+            flagged_content=[],
+            model_id=SLM_MODEL,
+            inference_time_ms=0.0
+        )
+
+
+def _parse_hallucination_response(text: str) -> dict:
+    """
+    Parse the SLM's hallucination check response.
+
+    Expects JSON format:
+    {
+      "has_hallucination": true/false,
+      "hallucination_type": "...",
+      "explanation": "...",
+      "severity": "...",
+      "flagged_content": [...]
+    }
+    """
+    import re
+
+    # Try to extract JSON from response
+    start_idx = text.find('{')
+    end_idx = text.rfind('}')
+
+    if start_idx != -1 and end_idx != -1:
+        json_str = text[start_idx:end_idx + 1]
+        try:
+            parsed = json.loads(json_str)
+
+            # Validate and extract fields with defaults
+            return {
+                "has_hallucination": parsed.get("has_hallucination", False),
+                "hallucination_type": parsed.get("hallucination_type"),
+                "explanation": str(parsed.get("explanation", "No explanation provided"))[:500],
+                "severity": parsed.get("severity", "none"),
+                "flagged_content": parsed.get("flagged_content", [])[:20]  # Limit to 20 items
+            }
+        except json.JSONDecodeError:
+            pass
+
+    # Fallback: heuristic parsing if JSON fails
+    has_hallucination = "true" in text.lower() and "has_hallucination" in text.lower()
+
+    return {
+        "has_hallucination": has_hallucination,
+        "hallucination_type": "unknown" if has_hallucination else None,
+        "explanation": text[:500] if text else "Failed to parse response",
+        "severity": "medium" if has_hallucination else "none",
+        "flagged_content": []
+    }
 
 
 if __name__ == "__main__":
