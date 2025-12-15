@@ -176,7 +176,7 @@ options:
 BENCHEOF
 
     echo "Submitting benchmark to Cloud Build..."
-    gcloud builds submit --config=/tmp/cloudbuild-benchmark.yaml . --timeout=1800s --no-source
+    gcloud builds submit --config=/tmp/cloudbuild-benchmark.yaml --no-source --timeout=1800s
 
     echo "✓ Benchmark completed in cloud"
 fi
