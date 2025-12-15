@@ -19,6 +19,7 @@ COPY benchmark/ /app/benchmark/
 
 # Set env vars
 ENV PYTHONUNBUFFERED=1
+ENV ANONYMIZED_TELEMETRY=false
 
 # Entrypoint script to choose role
 COPY entrypoint.sh /app/entrypoint.sh

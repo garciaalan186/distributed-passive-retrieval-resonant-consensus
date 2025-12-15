@@ -30,6 +30,10 @@ from dataclasses import dataclass
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 import uvicorn
+
+# Disable ChromaDB telemetry (fixes "capture() takes 1 positional argument" errors)
+os.environ["ANONYMIZED_TELEMETRY"] = "false"
+
 import chromadb
 import numpy as np
 
