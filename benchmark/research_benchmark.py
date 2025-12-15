@@ -57,15 +57,37 @@ class ResearchBenchmarkSuite:
     def __init__(self, output_dir: str = "benchmark_results_research"):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
-        
-        # Scale levels to find hallucination threshold
-        self.scale_levels = [
-            {"name": "small", "events_per_topic_per_year": 10, "num_domains": 2},
-            {"name": "medium", "events_per_topic_per_year": 25, "num_domains": 3},
-            {"name": "large", "events_per_topic_per_year": 50, "num_domains": 4},
-            {"name": "stress", "events_per_topic_per_year": 100, "num_domains": 5},
-        ]
-        
+
+        # All available scale levels
+        all_scales = {
+            "small": {"name": "small", "events_per_topic_per_year": 10, "num_domains": 2},
+            "medium": {"name": "medium", "events_per_topic_per_year": 25, "num_domains": 3},
+            "large": {"name": "large", "events_per_topic_per_year": 50, "num_domains": 4},
+            "stress": {"name": "stress", "events_per_topic_per_year": 100, "num_domains": 5},
+        }
+
+        # Respect BENCHMARK_SCALE env var - can be single scale or comma-separated list
+        # Examples: "small", "small,medium", "all"
+        requested_scale = os.getenv("BENCHMARK_SCALE", "all").lower().strip()
+
+        if requested_scale == "all":
+            self.scale_levels = list(all_scales.values())
+        else:
+            # Support comma-separated list: "small,medium"
+            requested_names = [s.strip() for s in requested_scale.split(",")]
+            self.scale_levels = []
+            for name in requested_names:
+                if name in all_scales:
+                    self.scale_levels.append(all_scales[name])
+                else:
+                    print(f"Warning: Unknown scale '{name}', skipping. Valid: {list(all_scales.keys())}")
+
+            if not self.scale_levels:
+                print(f"Error: No valid scales specified. Using 'small' as default.")
+                self.scale_levels = [all_scales["small"]]
+
+        print(f"Benchmark will run scales: {[s['name'] for s in self.scale_levels]}")
+
         self.controller_url = os.getenv("CONTROLLER_URL", "http://localhost:8080/query")
         if not self.controller_url.endswith("/query"):
             self.controller_url = f"{self.controller_url.rstrip('/')}/query"
@@ -508,18 +530,31 @@ def upload_results_to_gcs(local_dir: Path):
         client = storage.Client()
         bucket = client.bucket(bucket_name)
 
-        # Upload all files in results directory
-        for file_path in local_dir.rglob("*"):
-            if file_path.is_file():
-                relative_path = file_path.relative_to(local_dir)
-                blob_name = f"benchmark_results/{relative_path}"
-                blob = bucket.blob(blob_name)
-                blob.upload_from_filename(str(file_path))
-                print(f"  Uploaded: gs://{bucket_name}/{blob_name}")
+        # Count and upload all files in results directory
+        files_to_upload = list(local_dir.rglob("*"))
+        files_to_upload = [f for f in files_to_upload if f.is_file()]
+        print(f"Found {len(files_to_upload)} files to upload from {local_dir}")
 
-        print(f"✓ Results uploaded to gs://{bucket_name}/benchmark_results/")
+        if not files_to_upload:
+            print("Warning: No files found to upload!")
+            return
+
+        uploaded_count = 0
+        for file_path in files_to_upload:
+            relative_path = file_path.relative_to(local_dir)
+            blob_name = f"benchmark_results/{relative_path}"
+            blob = bucket.blob(blob_name)
+            blob.upload_from_filename(str(file_path))
+            uploaded_count += 1
+            # Only print every 10th file to reduce noise
+            if uploaded_count <= 5 or uploaded_count % 10 == 0:
+                print(f"  [{uploaded_count}/{len(files_to_upload)}] gs://{bucket_name}/{blob_name}")
+
+        print(f"✓ Uploaded {uploaded_count} files to gs://{bucket_name}/benchmark_results/")
     except Exception as e:
-        print(f"Warning: Could not upload results to GCS: {e}")
+        print(f"ERROR: Could not upload results to GCS: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def main():
@@ -528,18 +563,31 @@ def main():
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
     suite = ResearchBenchmarkSuite()
-    results = suite.run_full_benchmark()
+    results = None
 
-    print("\n" + "="*60)
-    print("BENCHMARK COMPLETE")
-    print("="*60)
-    print(f"Results directory: {suite.output_dir}")
-    print(f"Research report: {suite.output_dir}/RESEARCH_REPORT.md")
+    try:
+        results = suite.run_full_benchmark()
 
-    # Upload results to GCS if running in cloud
-    if os.getenv("HISTORY_BUCKET"):
-        print("\nUploading results to GCS...")
-        upload_results_to_gcs(suite.output_dir)
+        print("\n" + "="*60)
+        print("BENCHMARK COMPLETE")
+        print("="*60)
+        print(f"Results directory: {suite.output_dir}")
+        print(f"Research report: {suite.output_dir}/RESEARCH_REPORT.md")
+    except Exception as e:
+        print(f"\n{'='*60}")
+        print(f"BENCHMARK FAILED: {e}")
+        print(f"{'='*60}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        # Always try to upload results to GCS, even on failure
+        # This ensures partial results are available for debugging
+        if os.getenv("HISTORY_BUCKET"):
+            print("\n--- Uploading results to GCS ---")
+            print(f"Bucket: gs://{os.getenv('HISTORY_BUCKET')}/benchmark_results/")
+            upload_results_to_gcs(suite.output_dir)
+        else:
+            print("\nHISTORY_BUCKET not set, skipping GCS upload")
 
 
 if __name__ == "__main__":

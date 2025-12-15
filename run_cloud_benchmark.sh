@@ -201,7 +201,9 @@ steps:
       - 'CONTROLLER_URL=${CONTROLLER_URL}'
       - 'HISTORY_BUCKET=${HISTORY_BUCKET}'
       - 'HISTORY_SCALE=${BENCHMARK_SCALE}'
+      - 'BENCHMARK_SCALE=${BENCHMARK_SCALE}'
       - 'TOKENIZERS_PARALLELISM=false'
+      - 'ANONYMIZED_TELEMETRY=false'
     dir: '/app'
     id: 'run-benchmark'
 
