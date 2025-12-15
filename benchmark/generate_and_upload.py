@@ -36,7 +36,9 @@ import sys
 import json
 import argparse
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing
 
 # Check for google-cloud-storage before importing
 try:
@@ -176,21 +178,33 @@ def upload_raw_to_gcs(scale: str, local_data: Dict):
         upload_to_gcs(shard_file, f"raw/{scale}/shards/{shard_file.name}")
 
 
-def compute_and_upload_embeddings(
-    scale: str,
-    events_by_year: Dict[str, List[Dict]],
-    local_dir: Path,
-    model_id: str = DEFAULT_EMBEDDING_MODEL
-):
-    """Compute embeddings for all shards and upload to GCS."""
-    print(f"  Computing embeddings with model: {model_id}")
-    model_folder = get_model_folder_name(model_id)
+def _embed_single_shard(args: Tuple[str, List[Dict], str, str, str]) -> Tuple[str, bool, str]:
+    """
+    Embed a single shard - designed to be called in parallel.
 
-    embeddings_dir = local_dir / "embeddings" / model_folder
-    embeddings_dir.mkdir(parents=True, exist_ok=True)
+    Each shard is completely independent - no cross-shard context needed.
+    This enables horizontal scaling across time shards.
 
-    for year, events in events_by_year.items():
-        print(f"    Processing shard_{year} ({len(events)} events)...")
+    Args:
+        args: Tuple of (year, events, scale, model_id, local_dir_str)
+
+    Returns:
+        Tuple of (year, success, message)
+    """
+    year, events, scale, model_id, local_dir_str = args
+    local_dir = Path(local_dir_str)
+
+    try:
+        # Import inside function for multiprocessing compatibility
+        from dpr_rc.embedding_utils import (
+            compute_embeddings as _compute_embeddings,
+            save_embeddings_npz as _save_embeddings_npz,
+            get_model_folder_name as _get_model_folder_name
+        )
+
+        model_folder = _get_model_folder_name(model_id)
+        embeddings_dir = local_dir / "embeddings" / model_folder
+        embeddings_dir.mkdir(parents=True, exist_ok=True)
 
         # Extract texts and metadata
         texts = [event['content'] for event in events]
@@ -205,12 +219,12 @@ def compute_and_upload_embeddings(
             for event in events
         ]
 
-        # Compute embeddings
-        embeddings = compute_embeddings(texts, model_id)
+        # Compute embeddings (completely independent of other shards)
+        embeddings = _compute_embeddings(texts, model_id)
 
         # Save locally
         local_npz = embeddings_dir / f"shard_{year}.npz"
-        save_embeddings_npz(
+        _save_embeddings_npz(
             embeddings=embeddings,
             doc_ids=doc_ids,
             texts=texts,
@@ -221,7 +235,111 @@ def compute_and_upload_embeddings(
 
         # Upload to GCS
         gcs_path = f"embeddings/{model_folder}/{scale}/shards/shard_{year}.npz"
-        upload_to_gcs(local_npz, gcs_path)
+
+        # Get GCS client inside worker
+        from google.cloud import storage as gcs_storage
+        client = gcs_storage.Client()
+        bucket = client.bucket(HISTORY_BUCKET)
+        blob = bucket.blob(gcs_path)
+        blob.upload_from_filename(str(local_npz))
+
+        return (year, True, f"shard_{year}: {len(events)} events embedded")
+
+    except Exception as e:
+        return (year, False, f"shard_{year}: Error - {str(e)}")
+
+
+def compute_and_upload_embeddings(
+    scale: str,
+    events_by_year: Dict[str, List[Dict]],
+    local_dir: Path,
+    model_id: str = DEFAULT_EMBEDDING_MODEL,
+    parallel: bool = True,
+    max_workers: int = None
+):
+    """
+    Compute embeddings for all shards and upload to GCS.
+
+    Supports parallel processing across time shards since each shard
+    is completely independent - embeddings are computed per-document
+    with no cross-shard context needed.
+
+    Args:
+        scale: Scale level (small, medium, large, stress)
+        events_by_year: Dict mapping year to list of events
+        local_dir: Local directory for temporary files
+        model_id: Embedding model to use
+        parallel: If True, process shards in parallel
+        max_workers: Max parallel workers (default: CPU count)
+    """
+    print(f"  Computing embeddings with model: {model_id}")
+    print(f"  Parallel processing: {parallel}")
+
+    model_folder = get_model_folder_name(model_id)
+    embeddings_dir = local_dir / "embeddings" / model_folder
+    embeddings_dir.mkdir(parents=True, exist_ok=True)
+
+    if parallel and len(events_by_year) > 1:
+        # Parallel processing - each shard is independent
+        if max_workers is None:
+            max_workers = min(multiprocessing.cpu_count(), len(events_by_year))
+
+        print(f"  Using {max_workers} parallel workers for {len(events_by_year)} shards")
+
+        # Prepare arguments for parallel execution
+        shard_args = [
+            (year, events, scale, model_id, str(local_dir))
+            for year, events in events_by_year.items()
+        ]
+
+        # Process shards in parallel
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_embed_single_shard, args): args[0]
+                      for args in shard_args}
+
+            for future in as_completed(futures):
+                year = futures[future]
+                try:
+                    year_result, success, message = future.result()
+                    status = "✓" if success else "✗"
+                    print(f"    {status} {message}")
+                except Exception as e:
+                    print(f"    ✗ shard_{year}: Exception - {str(e)}")
+    else:
+        # Sequential processing (single shard or parallel disabled)
+        for year, events in events_by_year.items():
+            print(f"    Processing shard_{year} ({len(events)} events)...")
+
+            # Extract texts and metadata
+            texts = [event['content'] for event in events]
+            doc_ids = [event['id'] for event in events]
+            metadatas = [
+                {
+                    "timestamp": event.get('timestamp', ''),
+                    "topic": event.get('topic', ''),
+                    "event_type": event.get('event_type', ''),
+                    "perspective": event.get('perspective', '')
+                }
+                for event in events
+            ]
+
+            # Compute embeddings
+            embeddings = compute_embeddings(texts, model_id)
+
+            # Save locally
+            local_npz = embeddings_dir / f"shard_{year}.npz"
+            save_embeddings_npz(
+                embeddings=embeddings,
+                doc_ids=doc_ids,
+                texts=texts,
+                metadatas=metadatas,
+                output_path=str(local_npz),
+                model_id=model_id
+            )
+
+            # Upload to GCS
+            gcs_path = f"embeddings/{model_folder}/{scale}/shards/shard_{year}.npz"
+            upload_to_gcs(local_npz, gcs_path)
 
     print(f"  Embeddings complete for {len(events_by_year)} shards")
 
@@ -325,15 +443,25 @@ def list_available_data():
         print(f"Error listing GCS data: {e}")
 
 
-def retroactive_embed(scale: str, model_id: str):
+def retroactive_embed(scale: str, model_id: str, parallel: bool = True, max_workers: int = None):
     """
     Retroactively compute embeddings for existing raw data with a new model.
 
     This is the key feature for model evolution - when you want to try
     a new embedding model, run this to create embeddings without regenerating raw data.
+
+    Each shard is processed independently and can be parallelized across multiple
+    workers since embedding computation requires no cross-shard context.
+
+    Args:
+        scale: Scale level (small, medium, large, stress)
+        model_id: Embedding model to use
+        parallel: Enable parallel processing across shards
+        max_workers: Maximum parallel workers (default: CPU count)
     """
     print(f"\n{'='*60}")
     print(f"Retroactive Embedding: {scale} with {model_id}")
+    print(f"Parallel: {parallel}, Max workers: {max_workers or 'auto'}")
     print(f"{'='*60}")
 
     try:
@@ -343,12 +471,12 @@ def retroactive_embed(scale: str, model_id: str):
         # Check if raw data exists
         if not raw_data_exists(scale):
             print(f"  Error: No raw data found for scale '{scale}'")
-            return
+            return False
 
         # Check if embeddings already exist
         if embeddings_exist(scale, model_id):
-            print(f"  Embeddings already exist for {model_id}. Use a different model or delete existing.")
-            return
+            print(f"  Embeddings already exist for {model_id}. Skipping.")
+            return True
 
         # Download raw shards
         print(f"  Downloading raw shards...")
@@ -365,20 +493,53 @@ def retroactive_embed(scale: str, model_id: str):
                 events_by_year[year] = json.loads(content)
                 print(f"    Downloaded shard_{year}: {len(events_by_year[year])} events")
 
-        # Compute and upload embeddings
+        # Compute and upload embeddings (parallelized across shards)
         compute_and_upload_embeddings(
             scale=scale,
             events_by_year=events_by_year,
             local_dir=local_dir,
-            model_id=model_id
+            model_id=model_id,
+            parallel=parallel,
+            max_workers=max_workers
         )
 
         print(f"  Done! Retroactive embedding complete.")
+        return True
 
     except Exception as e:
         print(f"Error during retroactive embedding: {e}")
         import traceback
         traceback.print_exc()
+        return False
+
+
+def ensure_embeddings_exist(
+    scale: str,
+    model_id: str = DEFAULT_EMBEDDING_MODEL,
+    parallel: bool = True,
+    max_workers: int = None
+) -> bool:
+    """
+    Ensure embeddings exist for the given scale and model.
+
+    If raw data exists but embeddings don't, computes them.
+    This is called by run_cloud_benchmark.sh before running tests.
+
+    Returns:
+        True if embeddings exist (or were successfully computed), False otherwise
+    """
+    print(f"\n--- Checking embeddings for {scale} with {model_id} ---")
+
+    if embeddings_exist(scale, model_id):
+        print(f"  ✓ Embeddings already exist")
+        return True
+
+    if not raw_data_exists(scale):
+        print(f"  ✗ No raw data found. Run with --force to generate.")
+        return False
+
+    print(f"  → Raw data exists but embeddings missing. Computing...")
+    return retroactive_embed(scale, model_id, parallel, max_workers)
 
 
 def main():
@@ -398,6 +559,14 @@ def main():
                         help=f"Embedding model ID (default: {DEFAULT_EMBEDDING_MODEL})")
     parser.add_argument("--retroactive-embed", action="store_true",
                         help="Compute embeddings for existing raw data with a new model")
+    parser.add_argument("--ensure-embeddings", action="store_true",
+                        help="Ensure embeddings exist (compute if missing, skip if present)")
+    parser.add_argument("--parallel", action="store_true", default=True,
+                        help="Enable parallel processing across time shards (default: True)")
+    parser.add_argument("--no-parallel", action="store_true",
+                        help="Disable parallel processing (sequential mode)")
+    parser.add_argument("--workers", type=int, default=None,
+                        help="Max parallel workers (default: CPU count)")
 
     args = parser.parse_args()
 
@@ -406,22 +575,38 @@ def main():
         print("Install with: pip install google-cloud-storage")
         sys.exit(1)
 
+    # Determine parallel mode
+    parallel = not args.no_parallel
+
     if args.list:
         list_available_data()
         return
 
+    if args.ensure_embeddings:
+        # Called by run_cloud_benchmark.sh to ensure embeddings exist
+        if args.scale == "all":
+            success = all(
+                ensure_embeddings_exist(scale, args.model, parallel, args.workers)
+                for scale in SCALE_CONFIGS.keys()
+            )
+        else:
+            success = ensure_embeddings_exist(args.scale, args.model, parallel, args.workers)
+
+        sys.exit(0 if success else 1)
+
     if args.retroactive_embed:
         if args.scale == "all":
             for scale in SCALE_CONFIGS.keys():
-                retroactive_embed(scale, args.model)
+                retroactive_embed(scale, args.model, parallel, args.workers)
         else:
-            retroactive_embed(args.scale, args.model)
+            retroactive_embed(args.scale, args.model, parallel, args.workers)
         return
 
     print("=" * 60)
     print("SYNTHETIC HISTORY DATA GENERATOR v2")
     print(f"Target bucket: gs://{HISTORY_BUCKET}/")
     print(f"Embedding model: {args.model}")
+    print(f"Parallel processing: {parallel}")
     print("=" * 60)
 
     if args.scale == "all":
