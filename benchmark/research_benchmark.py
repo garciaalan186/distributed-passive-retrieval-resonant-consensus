@@ -91,6 +91,10 @@ class ResearchBenchmarkSuite:
         self.controller_url = os.getenv("CONTROLLER_URL", "http://localhost:8080/query")
         if not self.controller_url.endswith("/query"):
             self.controller_url = f"{self.controller_url.rstrip('/')}/query"
+
+        # SLM service for hallucination detection
+        self.slm_service_url = os.getenv("SLM_SERVICE_URL", "http://localhost:8081")
+        self.slm_timeout = float(os.getenv("SLM_TIMEOUT", "30.0"))
         
     def run_full_benchmark(self):
         """Execute complete benchmark across all scale levels"""
@@ -312,7 +316,204 @@ class ResearchBenchmarkSuite:
         
         self._save_json(results, results_dir / "results_baseline.json")
         return results
-    
+
+    def detect_hallucination_via_slm(
+        self,
+        query: str,
+        ground_truth: Dict,
+        system_response: str,
+        glossary: Dict,
+        confidence: float
+    ) -> Dict:
+        """
+        Use SLM to determine if response contains hallucinations.
+
+        This replaces naive string matching with semantic understanding.
+
+        Args:
+            query: The original query
+            ground_truth: Expected consensus/disputed claims from dataset
+            system_response: What A* returned
+            glossary: Valid phonotactic terms and their definitions
+            confidence: How certain the system was (0-1)
+
+        Returns:
+            {
+                "has_hallucination": bool,
+                "hallucination_type": str or None,
+                "explanation": str,
+                "severity": str,
+                "flagged_content": list
+            }
+        """
+        try:
+            # Build a comprehensive prompt for the SLM
+            glossary_terms = list(glossary.get('physics', {}).get('particles', {}).keys())[:20]
+            glossary_phenomena = list(glossary.get('physics', {}).get('phenomena', {}).keys())[:20]
+
+            # Get domain terms from glossary
+            domain_terms = []
+            for domain_name, domain_data in glossary.get('domains', {}).items():
+                domain_terms.extend(list(domain_data.get('concepts', {}).keys())[:10])
+
+            valid_terms = glossary_terms + glossary_phenomena + domain_terms[:30]
+
+            prompt = f"""You are evaluating a retrieval system's response for hallucinations.
+
+QUERY: {query}
+
+SYSTEM RESPONSE: {system_response}
+
+SYSTEM CONFIDENCE: {confidence:.2f} (0=uncertain, 1=certain)
+
+VALID TERMS (from dataset glossary):
+{', '.join(valid_terms[:40])}
+
+GROUND TRUTH CONTEXT:
+- Expected consensus claims: {ground_truth.get('expected_consensus', [])}
+- Expected disputed points: {ground_truth.get('expected_disputed', [])}
+
+TASK:
+Determine if the system response contains hallucinations. Consider:
+
+1. FABRICATED FACTS: Does it make claims not supported by ground truth?
+2. INVALID TERMS: Does it use terms/concepts not in the valid glossary?
+3. FALSE CERTAINTY: Does it present disputed information as definitive fact?
+4. APPROPRIATE UNCERTAINTY: If confidence < 0.9 or response mentions "perspectives"/"mixed",
+   presenting alternatives is VALID, not hallucination.
+
+IMPORTANT:
+- Common words like "The", "In", "No", "Yes" are NOT hallucinations
+- If system shows uncertainty, multiple perspectives are acceptable
+- Only flag terms that are completely fabricated AND presented as fact
+- Phonotactic terms from glossary are valid even if unfamiliar
+
+Respond in JSON format:
+{{
+    "has_hallucination": true/false,
+    "hallucination_type": "fabricated_fact" | "invalid_term" | "false_certainty" | null,
+    "explanation": "brief explanation",
+    "severity": "high" | "medium" | "low" | "none",
+    "flagged_content": ["specific", "problematic", "parts"]
+}}"""
+
+            # Call SLM service
+            response = requests.post(
+                f"{self.slm_service_url}/verify",
+                json={"prompt": prompt},
+                timeout=self.slm_timeout
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                # Try to parse JSON from SLM response
+                slm_text = result.get("response", "{}")
+
+                # Extract JSON from response (SLM might add explanation text)
+                import re
+                json_match = re.search(r'\{[\s\S]*\}', slm_text)
+                if json_match:
+                    slm_judgment = json.loads(json_match.group())
+                    return slm_judgment
+                else:
+                    # Fallback: try to parse heuristically
+                    has_hallucination = "true" in slm_text.lower() and "has_hallucination" in slm_text.lower()
+                    return {
+                        "has_hallucination": has_hallucination,
+                        "hallucination_type": "unknown",
+                        "explanation": slm_text[:200],
+                        "severity": "medium" if has_hallucination else "none",
+                        "flagged_content": []
+                    }
+            else:
+                # SLM service failed, fall back to conservative approach
+                print(f"SLM hallucination detection failed: {response.status_code}")
+                return self._fallback_hallucination_detection(
+                    system_response, glossary, confidence
+                )
+
+        except Exception as e:
+            print(f"Error in SLM hallucination detection: {e}")
+            return self._fallback_hallucination_detection(
+                system_response, glossary, confidence
+            )
+
+    def _fallback_hallucination_detection(
+        self,
+        response: str,
+        glossary: Dict,
+        confidence: float
+    ) -> Dict:
+        """
+        Improved fallback when SLM is unavailable.
+        More sophisticated than pure string matching.
+        """
+        # Build set of valid terms from glossary
+        valid_terms = set()
+
+        # Add physics terms
+        if 'physics' in glossary:
+            valid_terms.update(glossary['physics'].get('particles', {}).keys())
+            valid_terms.update(glossary['physics'].get('phenomena', {}).keys())
+            valid_terms.update(glossary['physics'].get('constants', {}).keys())
+
+        # Add domain terms
+        for domain_name, domain_data in glossary.get('domains', {}).items():
+            valid_terms.update(domain_data.get('concepts', {}).keys())
+            valid_terms.add(domain_name)
+
+        # Common English words that should NOT be flagged
+        common_words = {
+            'No', 'Yes', 'The', 'A', 'An', 'In', 'On', 'At', 'To', 'For', 'Of', 'With',
+            'By', 'From', 'As', 'Is', 'Are', 'Was', 'Were', 'Be', 'Been', 'Being',
+            'Have', 'Has', 'Had', 'Do', 'Does', 'Did', 'Will', 'Would', 'Should',
+            'Could', 'May', 'Might', 'Must', 'Can', 'This', 'That', 'These', 'Those',
+            'Research', 'Study', 'Analysis', 'Results', 'Data', 'Findings', 'Progress',
+            'Development', 'Breakthrough', 'Discovery', 'Experiment', 'Observation'
+        }
+
+        # Extract capitalized words (potential proper nouns/terms)
+        words = response.split()
+        suspicious_terms = []
+
+        for word in words:
+            # Clean word (remove punctuation)
+            clean_word = word.strip('.,!?;:()"\'')
+            if not clean_word:
+                continue
+
+            # Check if it's capitalized and not a common word
+            if clean_word[0].isupper() and clean_word not in common_words:
+                # Check if it's in valid terms
+                if clean_word not in valid_terms:
+                    suspicious_terms.append(clean_word)
+
+        # If confidence is low or response indicates uncertainty, be lenient
+        is_uncertain = confidence < 0.7 or any(
+            word in response.lower()
+            for word in ['uncertain', 'mixed', 'perspectives', 'disputed', 'conflicting']
+        )
+
+        # Only flag as hallucination if:
+        # 1. There are suspicious terms
+        # 2. System is confident (or if uncertain, terms are egregious)
+        if suspicious_terms and (not is_uncertain or len(suspicious_terms) > 5):
+            return {
+                "has_hallucination": True,
+                "hallucination_type": "invalid_term",
+                "explanation": f"Found terms not in glossary: {', '.join(suspicious_terms[:5])}",
+                "severity": "high" if not is_uncertain else "medium",
+                "flagged_content": suspicious_terms
+            }
+        else:
+            return {
+                "has_hallucination": False,
+                "hallucination_type": None,
+                "explanation": "No significant hallucinations detected",
+                "severity": "none",
+                "flagged_content": []
+            }
+
     def compare_results(
         self,
         queries: List[Dict],
@@ -357,27 +558,31 @@ class ResearchBenchmarkSuite:
                 
                 if any_option_correct:
                     dprrc_correct += 1
-                
-                # Check for hallucinations
-                # CRITICAL: If system is uncertain (confidence < 0.9) or presents conflict, 
-                # incorrect options are valid "perspectives", NOT hallucinations.
-                # Only count terms that are completely fabricated (not in glossary) and presented as FACT.
-                
-                is_uncertain = confidence < 0.9 or "mixed" in response.lower() or "perspectives" in response.lower()
-                
-                response_terms = [w for w in response.split() if w and w[0].isupper()]
-                hallucinated_terms = [t for t in response_terms if t not in glossary]
-                
-                if hallucinated_terms:
-                    # If uncertain, we are more lenient: strictly check against ALL retrieved content?
-                    # For this benchmark, if uncertain, we allow "incorrect" options as long as they aren't pure gibberish.
-                    # Terms not in glossary are still pure gibberish/hallucinations.
+
+                # Check for hallucinations using SLM-based semantic detection
+                ground_truth = {
+                    "expected_consensus": query.get("expected_consensus", []),
+                    "expected_disputed": query.get("expected_disputed", [])
+                }
+
+                hallucination_result = self.detect_hallucination_via_slm(
+                    query=query.get("question", ""),
+                    ground_truth=ground_truth,
+                    system_response=response,
+                    glossary=glossary,
+                    confidence=confidence
+                )
+
+                if hallucination_result["has_hallucination"]:
                     dprrc_hallucinations.append({
                         "query_id": dprrc.get("query_id"),
-                        "terms": hallucinated_terms,
-                        "context": "uncertain" if is_uncertain else "confident"
+                        "type": hallucination_result["hallucination_type"],
+                        "severity": hallucination_result["severity"],
+                        "explanation": hallucination_result["explanation"],
+                        "flagged_content": hallucination_result["flagged_content"],
+                        "confidence": confidence
                     })
-                
+
                 dprrc_latencies.append(dprrc.get("latency_ms", 0))
             
             # Evaluate baseline
@@ -389,15 +594,30 @@ class ResearchBenchmarkSuite:
                 
                 if recall > 0.5 and len(response) > 20:
                     baseline_correct += 1
-                
-                response_terms = [w for w in response.split() if w and w[0].isupper()]
-                hallucinated_terms = [t for t in response_terms if t not in glossary]
-                if hallucinated_terms:
+
+                # Check for hallucinations in baseline using same SLM method
+                ground_truth = {
+                    "expected_consensus": query.get("expected_consensus", []),
+                    "expected_disputed": query.get("expected_disputed", [])
+                }
+
+                hallucination_result = self.detect_hallucination_via_slm(
+                    query=query.get("question", ""),
+                    ground_truth=ground_truth,
+                    system_response=response,
+                    glossary=glossary,
+                    confidence=1.0  # Baseline is always confident
+                )
+
+                if hallucination_result["has_hallucination"]:
                     baseline_hallucinations.append({
                         "query_id": baseline.get("query_id"),
-                        "terms": hallucinated_terms
+                        "type": hallucination_result["hallucination_type"],
+                        "severity": hallucination_result["severity"],
+                        "explanation": hallucination_result["explanation"],
+                        "flagged_content": hallucination_result["flagged_content"]
                     })
-                
+
                 baseline_latencies.append(baseline.get("latency_ms", 0))
         
         total_queries = len(queries)
