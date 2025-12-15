@@ -13,6 +13,10 @@ numpy==1.26.3
 torch==2.1.2+cpu
 sentence-transformers==2.2.2
 
+# SLM (Small Language Model) for L2 verification
+transformers==4.36.2
+accelerate==0.25.0
+
 # API
 fastapi==0.109.0
 uvicorn==0.27.0

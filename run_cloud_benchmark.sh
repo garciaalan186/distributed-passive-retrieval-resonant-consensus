@@ -128,15 +128,46 @@ if [ -f "./deploy_commands.sh" ]; then
 else
     echo "No deploy_commands.sh found. Deploying manually..."
 
-    # Deploy active controller
+    # Step 4a: Deploy SLM Service first (passive workers depend on it)
+    echo "Deploying SLM Service..."
+    gcloud run deploy dpr-slm-service \
+        --image="${IMAGE_URI}" \
+        --region="${REGION}" \
+        --set-env-vars="ROLE=slm,SLM_MODEL=Qwen/Qwen2-0.5B-Instruct" \
+        --memory=4Gi \
+        --cpu=2 \
+        --timeout=300 \
+        --min-instances=1 \
+        --no-allow-unauthenticated \
+        --quiet || true
+
+    # Get SLM service URL
+    SLM_SERVICE_URL=$(gcloud run services describe dpr-slm-service --region=$REGION --format='value(status.url)' 2>/dev/null || echo "")
+    echo "SLM Service URL: $SLM_SERVICE_URL"
+
+    # Step 4b: Deploy Active Controller
+    echo "Deploying Active Controller..."
     gcloud run deploy dpr-active-controller \
         --image="${IMAGE_URI}" \
         --region="${REGION}" \
         --allow-unauthenticated \
-        --set-env-vars="ROLE=controller,HISTORY_BUCKET=${HISTORY_BUCKET},HISTORY_SCALE=${BENCHMARK_SCALE}" \
+        --set-env-vars="ROLE=active,HISTORY_BUCKET=${HISTORY_BUCKET},HISTORY_SCALE=${BENCHMARK_SCALE}" \
         --memory=2Gi \
         --timeout=300 \
         --quiet || true
+
+    # Step 4c: Deploy Passive Workers (with SLM_SERVICE_URL)
+    if [ -n "$SLM_SERVICE_URL" ]; then
+        echo "Deploying Passive Workers..."
+        gcloud run deploy dpr-passive-worker \
+            --image="${IMAGE_URI}" \
+            --region="${REGION}" \
+            --set-env-vars="ROLE=passive,HISTORY_BUCKET=${HISTORY_BUCKET},HISTORY_SCALE=${BENCHMARK_SCALE},SLM_SERVICE_URL=${SLM_SERVICE_URL}" \
+            --memory=2Gi \
+            --min-instances=3 \
+            --no-allow-unauthenticated \
+            --quiet || true
+    fi
 fi
 
 # --- Step 5: Get Controller URL ---
@@ -203,7 +234,9 @@ echo ""
 
 # Delete services (ignore errors if they don't exist)
 gcloud run services delete dpr-active-controller --region=$REGION --quiet 2>/dev/null || true
+gcloud run services delete dpr-passive-worker --region=$REGION --quiet 2>/dev/null || true
 gcloud run services delete dpr-passive-workers --region=$REGION --quiet 2>/dev/null || true
+gcloud run services delete dpr-slm-service --region=$REGION --quiet 2>/dev/null || true
 gcloud run services delete dpr-baseline-rag --region=$REGION --quiet 2>/dev/null || true
 
 # Also delete the Memorystore Redis instance if it exists (expensive!)

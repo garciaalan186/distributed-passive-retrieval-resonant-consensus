@@ -24,6 +24,7 @@ import redis
 import threading
 import hashlib
 import tempfile
+import requests
 from typing import Dict, Any, List, Optional, Set
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
@@ -53,6 +54,10 @@ WORKER_EPOCH = os.getenv("WORKER_EPOCH", "2020")  # Default epoch (can handle an
 HISTORY_BUCKET = os.getenv("HISTORY_BUCKET", None)
 HISTORY_SCALE = os.getenv("HISTORY_SCALE", "medium")  # Scale level for data
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
+
+# SLM Service for L2 verification (per spec: SLM-based reasoning, not token overlap)
+SLM_SERVICE_URL = os.getenv("SLM_SERVICE_URL", "http://localhost:8081")
+SLM_VERIFY_TIMEOUT = float(os.getenv("SLM_VERIFY_TIMEOUT", "10.0"))  # seconds
 
 logger = StructuredLogger(ComponentType.PASSIVE_WORKER)
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
@@ -539,6 +544,52 @@ class PassiveWorker:
 
         Per Mathematical Model Section 5.2, Equation 9:
         C(r_p) = V(q, context_p) · (1 / (1 + i))
+
+        This calls the SLM service to get a reasoned verification judgment,
+        rather than using simple token overlap.
+        """
+        try:
+            response = requests.post(
+                f"{SLM_SERVICE_URL}/verify",
+                json={
+                    "query": query,
+                    "retrieved_content": content[:2000],  # Limit content size
+                    "trace_id": f"{WORKER_ID}_{time.time()}"
+                },
+                timeout=SLM_VERIFY_TIMEOUT
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                base_score = result.get("confidence", 0.5)
+
+                # Apply depth penalty per spec equation
+                depth_penalty = 1.0 / (1.0 + depth)
+                confidence = base_score * depth_penalty
+
+                logger.logger.debug(
+                    f"SLM verification: confidence={base_score:.2f}, "
+                    f"supports={result.get('supports_query')}, "
+                    f"reasoning={result.get('reasoning', '')[:100]}"
+                )
+
+                return max(0.0, min(1.0, confidence))
+            else:
+                logger.logger.warning(
+                    f"SLM service returned {response.status_code}, "
+                    f"falling back to heuristic"
+                )
+                return self._verify_l2_fallback(content, query, depth)
+
+        except requests.exceptions.RequestException as e:
+            logger.logger.warning(f"SLM service unavailable: {e}, using fallback")
+            return self._verify_l2_fallback(content, query, depth)
+
+    def _verify_l2_fallback(self, content: str, query: str, depth: int = 0) -> float:
+        """
+        Fallback L2 verification using token overlap.
+
+        Used only when SLM service is unavailable.
         """
         query_tokens = set(query.lower().split())
         content_tokens = set(content.lower().split())
