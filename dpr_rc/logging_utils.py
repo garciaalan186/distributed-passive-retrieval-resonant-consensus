@@ -1,7 +1,7 @@
 import logging
 import json
 import os
-import xxhash
+import hashlib
 from typing import Any, Dict, Optional
 from pythonjsonlogger import jsonlogger
 from .models import LogEntry, ComponentType, EventType
@@ -46,9 +46,9 @@ class StructuredLogger:
         self.component = component
 
     def hash_payload(self, payload: Any) -> str:
-        """Create a cryptographic hash of the payload for audit."""
+        """Create a hash of the payload for audit."""
         dumped = json.dumps(payload, sort_keys=True, default=str)
-        return xxhash.xxh64(dumped).hexdigest()
+        return hashlib.md5(dumped.encode()).hexdigest()[:16]
 
     def log_event(self, 
                   trace_id: str, 
