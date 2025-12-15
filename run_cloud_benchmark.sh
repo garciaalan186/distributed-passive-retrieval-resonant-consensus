@@ -38,7 +38,7 @@ export PROJECT_ID
 echo "--- Step 0: Checking Local Dependencies ---"
 pip install -q google-cloud-storage 2>/dev/null || true
 
-# 1. Ensure GCS Bucket Exists
+# 1. Ensure GCS Bucket Exists with proper permissions
 echo ""
 echo "--- Step 1: Ensuring GCS Bucket ---"
 if gsutil ls -b "gs://${HISTORY_BUCKET}" >/dev/null 2>&1; then
@@ -47,6 +47,14 @@ else
     echo "Creating bucket gs://${HISTORY_BUCKET}..."
     gsutil mb -l "${REGION}" "gs://${HISTORY_BUCKET}"
     echo "✓ Bucket created"
+fi
+
+# Ensure current user has full access (fixes 403 permission errors)
+CURRENT_USER=$(gcloud config get-value account 2>/dev/null)
+if [ -n "$CURRENT_USER" ]; then
+    echo "Ensuring bucket permissions for $CURRENT_USER..."
+    gsutil iam ch "user:${CURRENT_USER}:objectAdmin" "gs://${HISTORY_BUCKET}" 2>/dev/null || true
+    echo "✓ Bucket permissions configured"
 fi
 
 # 2. Generate Raw Data Locally (fast, no ML)

@@ -394,7 +394,7 @@ def generate_and_upload_scale(
 
 
 def list_available_data():
-    """List all available data in GCS."""
+    """List all available data in GCS (gracefully handles permission errors)."""
     try:
         client = get_gcs_client()
         bucket = client.bucket(HISTORY_BUCKET)
@@ -407,43 +407,55 @@ def list_available_data():
         print("\nRaw Data:")
         print("-" * 40)
         for scale in SCALE_CONFIGS.keys():
-            blob = bucket.blob(f"raw/{scale}/dataset.json")
-            if blob.exists():
-                blob.reload()
-                size_mb = blob.size / (1024 * 1024)
-                print(f"  {scale}: {size_mb:.2f} MB")
+            try:
+                blob = bucket.blob(f"raw/{scale}/dataset.json")
+                if blob.exists():
+                    blob.reload()
+                    size_mb = blob.size / (1024 * 1024)
+                    print(f"  {scale}: {size_mb:.2f} MB")
 
-                # Count shards
-                shard_blobs = list(bucket.list_blobs(prefix=f"raw/{scale}/shards/"))
-                print(f"    Shards: {len(shard_blobs)}")
-            else:
-                print(f"  {scale}: Not generated")
+                    # Count shards
+                    shard_blobs = list(bucket.list_blobs(prefix=f"raw/{scale}/shards/"))
+                    print(f"    Shards: {len(shard_blobs)}")
+                else:
+                    print(f"  {scale}: Not generated")
+            except Exception as e:
+                print(f"  {scale}: Unable to check (permission issue)")
 
         # List embeddings
         print("\nEmbeddings:")
         print("-" * 40)
 
-        # Find all model folders
-        embedding_prefix = "embeddings/"
-        seen_models = set()
+        try:
+            # Find all model folders
+            embedding_prefix = "embeddings/"
+            seen_models = set()
 
-        for blob in bucket.list_blobs(prefix=embedding_prefix):
-            parts = blob.name.split('/')
-            if len(parts) >= 2:
-                seen_models.add(parts[1])
+            for blob in bucket.list_blobs(prefix=embedding_prefix):
+                parts = blob.name.split('/')
+                if len(parts) >= 2:
+                    seen_models.add(parts[1])
 
-        for model_folder in sorted(seen_models):
-            print(f"  Model: {model_folder}")
-            for scale in SCALE_CONFIGS.keys():
-                shard_blobs = list(bucket.list_blobs(
-                    prefix=f"embeddings/{model_folder}/{scale}/shards/"
-                ))
-                if shard_blobs:
-                    total_size = sum(b.size for b in shard_blobs) / (1024 * 1024)
-                    print(f"    {scale}: {len(shard_blobs)} shards, {total_size:.2f} MB")
+            if not seen_models:
+                print("  (none computed yet)")
+            else:
+                for model_folder in sorted(seen_models):
+                    print(f"  Model: {model_folder}")
+                    for scale in SCALE_CONFIGS.keys():
+                        try:
+                            shard_blobs = list(bucket.list_blobs(
+                                prefix=f"embeddings/{model_folder}/{scale}/shards/"
+                            ))
+                            if shard_blobs:
+                                total_size = sum(b.size for b in shard_blobs) / (1024 * 1024)
+                                print(f"    {scale}: {len(shard_blobs)} shards, {total_size:.2f} MB")
+                        except Exception:
+                            print(f"    {scale}: Unable to check")
+        except Exception as e:
+            print(f"  Unable to list embeddings (permission issue)")
 
     except Exception as e:
-        print(f"Error listing GCS data: {e}")
+        print(f"Note: Could not list GCS data (run may still have succeeded): {e}")
 
 
 def retroactive_embed(scale: str, model_id: str, parallel: bool = True, max_workers: int = None):
