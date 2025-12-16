@@ -32,14 +32,14 @@ MIN_VOTES_FOR_CONSENSUS = int(os.getenv("MIN_VOTES", "1"))  # Minimum votes need
 
 # SLM Service for query enhancement (improves retrieval quality)
 SLM_SERVICE_URL = os.getenv("SLM_SERVICE_URL", "http://localhost:8081")
-SLM_ENHANCE_TIMEOUT = float(os.getenv("SLM_ENHANCE_TIMEOUT", "5.0"))  # seconds
+SLM_ENHANCE_TIMEOUT = float(os.getenv("SLM_ENHANCE_TIMEOUT", "30.0"))  # seconds (increased for cold starts)
 ENABLE_QUERY_ENHANCEMENT = os.getenv("ENABLE_QUERY_ENHANCEMENT", "true").lower() == "true"
 
 # HTTP-based worker communication (for Cloud Run without Redis)
 # Can be comma-separated list of worker URLs
 PASSIVE_WORKER_URL = os.getenv("PASSIVE_WORKER_URL", "")
 USE_HTTP_WORKERS = os.getenv("USE_HTTP_WORKERS", "true").lower() == "true"
-HTTP_WORKER_TIMEOUT = float(os.getenv("HTTP_WORKER_TIMEOUT", "30.0"))  # seconds
+HTTP_WORKER_TIMEOUT = float(os.getenv("HTTP_WORKER_TIMEOUT", "90.0"))  # seconds (increased for cold starts + GCS loading)
 
 logger = StructuredLogger(ComponentType.ACTIVE_CONTROLLER)
 
@@ -254,38 +254,62 @@ def enhance_query_via_slm(query_text: str, timestamp_context: Optional[str] = No
             "enhancement_used": False
         }
 
-    try:
-        response = requests.post(
-            f"{SLM_SERVICE_URL}/enhance_query",
-            json={
-                "query": query_text,
-                "timestamp_context": timestamp_context
-            },
-            timeout=SLM_ENHANCE_TIMEOUT
-        )
+    # Retry with exponential backoff (3 attempts: 0s, 2s, 4s delays)
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            if attempt > 0:
+                delay = 2 ** attempt  # Exponential backoff: 2s, 4s
+                logger.logger.debug(f"Retrying SLM enhance_query (attempt {attempt + 1}/{max_retries}) after {delay}s delay")
+                time.sleep(delay)
 
-        if response.status_code == 200:
-            result = response.json()
-            logger.logger.info(
-                f"Query enhanced: '{query_text}' -> '{result.get('enhanced_query', query_text)}' "
-                f"(expansions: {result.get('expansions', [])})"
-            )
-            return {
-                "original_query": query_text,
-                "enhanced_query": result.get("enhanced_query", query_text),
-                "expansions": result.get("expansions", []),
-                "enhancement_used": True,
-                "inference_time_ms": result.get("inference_time_ms", 0)
-            }
-        else:
-            logger.logger.warning(
-                f"SLM enhance_query returned {response.status_code}, using original query"
+            response = requests.post(
+                f"{SLM_SERVICE_URL}/enhance_query",
+                json={
+                    "query": query_text,
+                    "timestamp_context": timestamp_context
+                },
+                timeout=SLM_ENHANCE_TIMEOUT
             )
 
-    except requests.exceptions.RequestException as e:
-        logger.logger.warning(f"SLM service unavailable for query enhancement: {e}")
+            if response.status_code == 200:
+                result = response.json()
+                logger.logger.info(
+                    f"Query enhanced: '{query_text}' -> '{result.get('enhanced_query', query_text)}' "
+                    f"(expansions: {result.get('expansions', [])}) [attempt {attempt + 1}]"
+                )
+                return {
+                    "original_query": query_text,
+                    "enhanced_query": result.get("enhanced_query", query_text),
+                    "expansions": result.get("expansions", []),
+                    "enhancement_used": True,
+                    "inference_time_ms": result.get("inference_time_ms", 0)
+                }
+            elif response.status_code == 503:
+                # Service unavailable (model still loading), retry
+                logger.logger.warning(
+                    f"SLM service not ready (503), attempt {attempt + 1}/{max_retries}"
+                )
+                if attempt == max_retries - 1:
+                    # Last attempt failed, fall back
+                    break
+                continue
+            else:
+                # Other error codes, don't retry
+                logger.logger.warning(
+                    f"SLM enhance_query returned {response.status_code}, using original query"
+                )
+                break
 
-    # Fallback: return original query
+        except requests.exceptions.RequestException as e:
+            logger.logger.warning(f"SLM service error (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt == max_retries - 1:
+                # Last attempt failed, fall back
+                break
+            continue
+
+    # Fallback: return original query after all retries exhausted
+    logger.logger.info(f"Using original query after {max_retries} attempts: '{query_text}'")
     return {
         "original_query": query_text,
         "enhanced_query": query_text,

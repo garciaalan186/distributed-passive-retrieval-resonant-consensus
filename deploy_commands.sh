@@ -1,74 +1,93 @@
 #!/bin/bash
-# DPR-RC Service Deployment
-# Order matters: SLM service must be deployed before passive workers
+# deploy_commands.sh
+# HTTP-based deployment for Cloud Run (no Redis dependency)
 
 set -e
 
 PROJECT_ID=$(gcloud config get-value project 2>/dev/null)
-REGION=${REGION:-us-central1}
+REGION="us-central1"
 IMAGE_URI="gcr.io/${PROJECT_ID}/dpr-agent:latest"
-SERVICE_ACCOUNT="dpr-agent-sa@${PROJECT_ID}.iam.gserviceaccount.com"
-VPC_CONNECTOR="dpr-vpc-connector"
-REDIS_HOST=${REDIS_HOST:-"10.6.246.99"}
-REDIS_PORT=${REDIS_PORT:-6379}
-LOG_BUCKET="dpr-audit-logs-${PROJECT_ID}"
 HISTORY_BUCKET="dpr-history-data-${PROJECT_ID}"
+BENCHMARK_SCALE="${BENCHMARK_SCALE:-medium}"
+DEBUG_BREAKPOINTS="${DEBUG_BREAKPOINTS:-false}"
+DEBUG_PAUSE_SECONDS="${DEBUG_PAUSE_SECONDS:-2}"
 
-echo "=== Deploying DPR-RC Services ==="
-echo "Project: ${PROJECT_ID}"
-echo "Region: ${REGION}"
-
-# --- Step 1: Deploy SLM Service (must be first - other services depend on it) ---
+echo "Deploying DPR-RC services in HTTP mode (no Redis)"
+echo "Project: $PROJECT_ID"
+echo "Region: $REGION"
+echo "Bucket: $HISTORY_BUCKET"
+echo "Scale: $BENCHMARK_SCALE"
 echo ""
-echo "--- Deploying SLM Service ---"
+
+# Step 1: Deploy SLM Service first (other services depend on it)
+echo "Deploying SLM Service..."
 gcloud run deploy dpr-slm-service \
     --image="${IMAGE_URI}" \
     --region="${REGION}" \
-    --service-account="${SERVICE_ACCOUNT}" \
-    --set-env-vars="ROLE=slm,SLM_MODEL=Qwen/Qwen2-0.5B-Instruct,SLM_PORT=8080" \
-    --vpc-connector="${VPC_CONNECTOR}" \
-    --vpc-egress=private-ranges-only \
+    --set-env-vars="ROLE=slm,SLM_MODEL=Qwen/Qwen2-0.5B-Instruct" \
     --memory=4Gi \
     --cpu=2 \
     --timeout=300 \
     --min-instances=1 \
-    --max-instances=3 \
-    --no-allow-unauthenticated
+    --allow-unauthenticated \
+    --quiet
 
-# Get SLM service URL for passive workers
-SLM_SERVICE_URL=$(gcloud run services describe dpr-slm-service --region="${REGION}" --format='value(status.url)')
-echo "SLM Service URL: ${SLM_SERVICE_URL}"
+# Get SLM service URL
+SLM_SERVICE_URL=$(gcloud run services describe dpr-slm-service --region=$REGION --format='value(status.url)' 2>/dev/null || echo "")
+echo "SLM Service URL: $SLM_SERVICE_URL"
 
-# --- Step 2: Deploy Active Controller (with SLM for query enhancement) ---
-echo ""
-echo "--- Deploying Active Controller ---"
-gcloud run deploy dpr-active-controller \
-    --image="${IMAGE_URI}" \
-    --region="${REGION}" \
-    --service-account="${SERVICE_ACCOUNT}" \
-    --set-env-vars="REDIS_HOST=${REDIS_HOST},REDIS_PORT=${REDIS_PORT},LOG_BUCKET=${LOG_BUCKET},ROLE=active,CONTROLLER_URL=http://localhost:8080/query,SLM_SERVICE_URL=${SLM_SERVICE_URL},ENABLE_QUERY_ENHANCEMENT=true" \
-    --vpc-connector="${VPC_CONNECTOR}" \
-    --vpc-egress=private-ranges-only \
-    --memory=2Gi \
-    --timeout=300 \
-    --allow-unauthenticated
+# Wait for SLM service to be ready (model loading takes 60-120s)
+echo "Waiting for SLM service to be ready (this may take 1-2 minutes for model loading)..."
+MAX_WAIT=180  # 3 minutes max
+ELAPSED=0
+while [ $ELAPSED -lt $MAX_WAIT ]; do
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${SLM_SERVICE_URL}/ready" || echo "000")
+    if [ "$HTTP_CODE" = "200" ]; then
+        echo "✓ SLM service is ready"
+        break
+    fi
+    echo "  SLM service not ready yet (HTTP $HTTP_CODE), waiting... (${ELAPSED}s/${MAX_WAIT}s)"
+    sleep 10
+    ELAPSED=$((ELAPSED + 10))
+done
 
-# --- Step 3: Deploy Passive Worker (Scale to 3 minimum for consensus) ---
-echo ""
-echo "--- Deploying Passive Workers ---"
+if [ $ELAPSED -ge $MAX_WAIT ]; then
+    echo "⚠ WARNING: SLM service did not become ready within ${MAX_WAIT}s"
+    echo "  Continuing anyway, but queries may fail until model finishes loading"
+fi
+
+# Step 2: Deploy Passive Workers FIRST (Active Controller needs their URL)
+echo "Deploying Passive Workers..."
 gcloud run deploy dpr-passive-worker \
     --image="${IMAGE_URI}" \
     --region="${REGION}" \
-    --service-account="${SERVICE_ACCOUNT}" \
-    --set-env-vars="REDIS_HOST=${REDIS_HOST},REDIS_PORT=${REDIS_PORT},LOG_BUCKET=${LOG_BUCKET},ROLE=passive,HISTORY_BUCKET=${HISTORY_BUCKET},SLM_SERVICE_URL=${SLM_SERVICE_URL}" \
-    --vpc-connector="${VPC_CONNECTOR}" \
-    --vpc-egress=private-ranges-only \
+    --set-env-vars="ROLE=passive,HISTORY_BUCKET=${HISTORY_BUCKET},HISTORY_SCALE=${BENCHMARK_SCALE},SLM_SERVICE_URL=${SLM_SERVICE_URL},DEBUG_BREAKPOINTS=${DEBUG_BREAKPOINTS},DEBUG_PAUSE_SECONDS=${DEBUG_PAUSE_SECONDS}" \
     --memory=2Gi \
-    --min-instances=3 \
-    --no-allow-unauthenticated
+    --min-instances=1 \
+    --timeout=300 \
+    --allow-unauthenticated \
+    --quiet
+
+# Get Passive Worker URL
+PASSIVE_WORKER_URL=$(gcloud run services describe dpr-passive-worker --region=$REGION --format='value(status.url)' 2>/dev/null || echo "")
+echo "Passive Worker URL: $PASSIVE_WORKER_URL"
+
+# Step 3: Deploy Active Controller (with HTTP worker URL instead of Redis)
+echo "Deploying Active Controller..."
+gcloud run deploy dpr-active-controller \
+    --image="${IMAGE_URI}" \
+    --region="${REGION}" \
+    --allow-unauthenticated \
+    --set-env-vars="ROLE=active,HISTORY_BUCKET=${HISTORY_BUCKET},HISTORY_SCALE=${BENCHMARK_SCALE},SLM_SERVICE_URL=${SLM_SERVICE_URL},ENABLE_QUERY_ENHANCEMENT=true,PASSIVE_WORKER_URL=${PASSIVE_WORKER_URL},USE_HTTP_WORKERS=true,DEBUG_BREAKPOINTS=${DEBUG_BREAKPOINTS},DEBUG_PAUSE_SECONDS=${DEBUG_PAUSE_SECONDS}" \
+    --memory=2Gi \
+    --min-instances=1 \
+    --timeout=300 \
+    --quiet
 
 echo ""
-echo "=== Deployment Complete ==="
-echo "SLM Service: ${SLM_SERVICE_URL}"
-CONTROLLER_URL=$(gcloud run services describe dpr-active-controller --region="${REGION}" --format='value(status.url)')
-echo "Active Controller: ${CONTROLLER_URL}"
+echo "✓ Deployment complete"
+echo ""
+echo "Service URLs:"
+echo "  SLM: $SLM_SERVICE_URL"
+echo "  Worker: $PASSIVE_WORKER_URL"
+echo "  Controller: $(gcloud run services describe dpr-active-controller --region=$REGION --format='value(status.url)' 2>/dev/null)"

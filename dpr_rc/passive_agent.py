@@ -67,7 +67,7 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
 
 # SLM Service for L2 verification (per spec: SLM-based reasoning, not token overlap)
 SLM_SERVICE_URL = os.getenv("SLM_SERVICE_URL", "http://localhost:8081")
-SLM_VERIFY_TIMEOUT = float(os.getenv("SLM_VERIFY_TIMEOUT", "10.0"))  # seconds
+SLM_VERIFY_TIMEOUT = float(os.getenv("SLM_VERIFY_TIMEOUT", "30.0"))  # seconds (increased for cold starts)
 
 logger = StructuredLogger(ComponentType.PASSIVE_WORKER)
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
@@ -523,7 +523,8 @@ class PassiveWorker:
         try:
             year = shard_id.replace("shard_", "")
             cache_key = f"dpr:history_cache:{year}"
-            redis_client.setex(cache_key, 3600, json.dumps(documents))
+            # FIX: Increased TTL from 1 hour to 24 hours for long-running benchmarks
+            redis_client.setex(cache_key, 86400, json.dumps(documents))
         except Exception as e:
             logger.logger.warning(f"Failed to cache in Redis: {e}")
 
@@ -599,60 +600,78 @@ class PassiveWorker:
         This calls the SLM service to get a reasoned verification judgment,
         rather than using simple token overlap.
         """
-        try:
-            response = requests.post(
-                f"{SLM_SERVICE_URL}/verify",
-                json={
-                    "query": query,
-                    "retrieved_content": content[:2000],  # Limit content size
-                    "trace_id": f"{WORKER_ID}_{time.time()}"
-                },
-                timeout=SLM_VERIFY_TIMEOUT
-            )
+        # Retry with exponential backoff (3 attempts: 0s, 2s, 4s delays)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    delay = 2 ** attempt  # Exponential backoff: 2s, 4s
+                    logger.logger.debug(f"Retrying SLM verify (attempt {attempt + 1}/{max_retries}) after {delay}s delay")
+                    time.sleep(delay)
 
-            if response.status_code == 200:
-                result = response.json()
-                base_score = result.get("confidence", 0.5)
-
-                # Apply depth penalty per spec equation
-                depth_penalty = 1.0 / (1.0 + depth)
-                confidence = base_score * depth_penalty
-
-                logger.logger.debug(
-                    f"SLM verification: confidence={base_score:.2f}, "
-                    f"supports={result.get('supports_query')}, "
-                    f"reasoning={result.get('reasoning', '')[:100]}"
+                response = requests.post(
+                    f"{SLM_SERVICE_URL}/verify",
+                    json={
+                        "query": query,
+                        "retrieved_content": content[:2000],  # Limit content size
+                        "trace_id": f"{WORKER_ID}_{time.time()}"
+                    },
+                    timeout=SLM_VERIFY_TIMEOUT
                 )
 
-                # DEBUG: L2 verification via SLM
-                debug_l2_verification(
-                    WORKER_ID, query, content, confidence,
-                    method="SLM", slm_response=result
-                )
+                if response.status_code == 200:
+                    result = response.json()
+                    base_score = result.get("confidence", 0.5)
 
-                return max(0.0, min(1.0, confidence))
-            else:
-                logger.logger.warning(
-                    f"SLM service returned {response.status_code}, "
-                    f"falling back to heuristic"
-                )
-                fallback_confidence = self._verify_l2_fallback(content, query, depth)
-                # DEBUG: L2 verification via fallback
-                debug_l2_verification(
-                    WORKER_ID, query, content, fallback_confidence,
-                    method="Fallback (SLM returned non-200)"
-                )
-                return fallback_confidence
+                    # Apply depth penalty per spec equation
+                    depth_penalty = 1.0 / (1.0 + depth)
+                    confidence = base_score * depth_penalty
 
-        except requests.exceptions.RequestException as e:
-            logger.logger.warning(f"SLM service unavailable: {e}, using fallback")
-            fallback_confidence = self._verify_l2_fallback(content, query, depth)
-            # DEBUG: L2 verification via fallback
-            debug_l2_verification(
-                WORKER_ID, query, content, fallback_confidence,
-                method=f"Fallback (SLM unavailable: {type(e).__name__})"
-            )
-            return fallback_confidence
+                    logger.logger.debug(
+                        f"SLM verification: confidence={base_score:.2f}, "
+                        f"supports={result.get('supports_query')}, "
+                        f"reasoning={result.get('reasoning', '')[:100]} [attempt {attempt + 1}]"
+                    )
+
+                    # DEBUG: L2 verification via SLM
+                    debug_l2_verification(
+                        WORKER_ID, query, content, confidence,
+                        method="SLM", slm_response=result
+                    )
+
+                    return max(0.0, min(1.0, confidence))
+                elif response.status_code == 503:
+                    # Service unavailable (model still loading), retry
+                    logger.logger.warning(
+                        f"SLM service not ready (503), attempt {attempt + 1}/{max_retries}"
+                    )
+                    if attempt == max_retries - 1:
+                        # Last attempt failed, fall back
+                        break
+                    continue
+                else:
+                    # Other error codes, don't retry
+                    logger.logger.warning(
+                        f"SLM service returned {response.status_code}, falling back to heuristic"
+                    )
+                    break
+
+            except requests.exceptions.RequestException as e:
+                logger.logger.warning(f"SLM service error (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt == max_retries - 1:
+                    # Last attempt failed, fall back
+                    break
+                continue
+
+        # Fallback: use heuristic after all retries exhausted
+        logger.logger.info(f"Using fallback verification after {max_retries} attempts")
+        fallback_confidence = self._verify_l2_fallback(content, query, depth)
+        # DEBUG: L2 verification via fallback
+        debug_l2_verification(
+            WORKER_ID, query, content, fallback_confidence,
+            method=f"Fallback (SLM unavailable after {max_retries} retries)"
+        )
+        return fallback_confidence
 
     def _verify_l2_fallback(self, content: str, query: str, depth: int = 0) -> float:
         """
@@ -681,8 +700,14 @@ class PassiveWorker:
         return max(0.0, min(1.0, confidence))
 
     def calculate_quadrant(self, content: str, confidence: float) -> List[float]:
-        """L3 Semantic Quadrant Topology calculation."""
-        content_hash = hash(content)
+        """
+        L3 Semantic Quadrant Topology calculation.
+
+        Uses deterministic MD5 hash to ensure reproducibility across runs.
+        Python's built-in hash() is non-deterministic (randomized seed per process).
+        """
+        # Use deterministic hash (MD5) instead of Python's hash()
+        content_hash = int(hashlib.md5(content.encode('utf-8')).hexdigest()[:16], 16)
         x_base = ((content_hash % 100) / 100.0)
         x = (x_base * 0.5) + (confidence * 0.5)
         y_base = (((content_hash >> 8) % 100) / 100.0)

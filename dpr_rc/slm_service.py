@@ -25,7 +25,7 @@ import torch
 
 # Configuration
 SLM_MODEL = os.getenv("SLM_MODEL", "Qwen/Qwen2-0.5B-Instruct")
-SLM_PORT = int(os.getenv("SLM_PORT", 8081))
+SLM_PORT = int(os.getenv("PORT", os.getenv("SLM_PORT", "8080")))  # Cloud Run uses PORT env var
 MAX_NEW_TOKENS = int(os.getenv("SLM_MAX_TOKENS", 150))
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -389,14 +389,50 @@ app = FastAPI(
 
 
 @app.get("/")
+def root():
+    """Root endpoint."""
+    return {
+        "service": "DPR-RC SLM Service",
+        "model": SLM_MODEL,
+        "device": DEVICE,
+        "model_loaded": _model is not None
+    }
+
+
 @app.get("/health")
 def health_check():
-    """Health check endpoint."""
+    """
+    Health check endpoint for Cloud Run.
+    Returns 503 if model is still loading to prevent premature traffic routing.
+    """
+    if _model is None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Model {SLM_MODEL} is still loading. Please wait."
+        )
     return {
         "status": "healthy",
         "model": SLM_MODEL,
         "device": DEVICE,
-        "model_loaded": _model is not None
+        "model_loaded": True
+    }
+
+
+@app.get("/ready")
+def readiness_check():
+    """
+    Readiness endpoint - returns 200 only when model is fully loaded.
+    Use this to block deployment traffic until service is ready.
+    """
+    if _model is None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Model {SLM_MODEL} is still loading. Please wait."
+        )
+    return {
+        "status": "ready",
+        "model": SLM_MODEL,
+        "device": DEVICE
     }
 
 
@@ -664,6 +700,52 @@ def check_hallucination_endpoint(request: HallucinationCheckRequest):
             model_id=SLM_MODEL,
             inference_time_ms=0.0
         )
+
+
+@app.post("/batch_check_hallucination")
+def batch_check_hallucination_endpoint(requests: list[HallucinationCheckRequest]):
+    """
+    Batch hallucination checking for multiple query-response pairs.
+
+    More efficient when checking multiple results at once - reduces
+    HTTP overhead and allows for better resource utilization.
+
+    Returns a list of hallucination check results in the same order
+    as the input requests.
+    """
+    results = []
+
+    for req in requests:
+        try:
+            # Call the individual check for each request
+            result = check_hallucination_endpoint(req)
+            results.append({
+                "trace_id": req.trace_id,
+                "has_hallucination": result.has_hallucination,
+                "hallucination_type": result.hallucination_type,
+                "explanation": result.explanation,
+                "severity": result.severity,
+                "flagged_content": result.flagged_content,
+                "inference_time_ms": result.inference_time_ms
+            })
+        except Exception as e:
+            # On error, return conservative fallback
+            results.append({
+                "trace_id": req.trace_id,
+                "has_hallucination": False,
+                "hallucination_type": None,
+                "explanation": f"Error during check: {str(e)}",
+                "severity": "none",
+                "flagged_content": [],
+                "inference_time_ms": 0.0,
+                "error": str(e)
+            })
+
+    return {
+        "results": results,
+        "model_id": SLM_MODEL,
+        "batch_size": len(requests)
+    }
 
 
 def _parse_hallucination_response(text: str) -> dict:
