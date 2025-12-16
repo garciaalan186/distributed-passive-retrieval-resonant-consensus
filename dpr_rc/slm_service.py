@@ -236,7 +236,7 @@ def load_model():
 
         _model = AutoModelForCausalLM.from_pretrained(
             SLM_MODEL,
-            torch_dtype=torch.float32 if DEVICE == "cpu" else torch.float16,
+            torch_dtype=torch.bfloat16 if DEVICE == "cpu" else torch.float16,
             device_map="auto" if DEVICE == "cuda" else None,
             trust_remote_code=True
         )

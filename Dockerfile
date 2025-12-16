@@ -13,6 +13,13 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Pre-download Qwen2-0.5B model to eliminate runtime download (saves 3-5min startup time)
+RUN python -c "from transformers import AutoModelForCausalLM, AutoTokenizer; \
+    print('Pre-downloading Qwen2-0.5B-Instruct model...'); \
+    AutoTokenizer.from_pretrained('Qwen/Qwen2-0.5B-Instruct', trust_remote_code=True); \
+    AutoModelForCausalLM.from_pretrained('Qwen/Qwen2-0.5B-Instruct', torch_dtype='auto', trust_remote_code=True); \
+    print('Model pre-download complete')"
+
 # Copy application code
 COPY dpr_rc/ /app/dpr_rc/
 COPY benchmark/ /app/benchmark/
