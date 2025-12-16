@@ -20,13 +20,15 @@ echo "Scale: $BENCHMARK_SCALE"
 echo ""
 
 # Step 1: Deploy SLM Service first (other services depend on it)
-echo "Deploying SLM Service..."
+echo "Deploying SLM Service with GPU acceleration..."
 gcloud run deploy dpr-slm-service \
     --image="${IMAGE_URI}" \
     --region="${REGION}" \
     --set-env-vars="ROLE=slm,SLM_MODEL=Qwen/Qwen2-0.5B-Instruct" \
-    --memory=4Gi \
-    --cpu=2 \
+    --memory=8Gi \
+    --cpu=4 \
+    --gpu=1 \
+    --gpu-type=nvidia-l4 \
     --timeout=300 \
     --min-instances=1 \
     --allow-unauthenticated \
@@ -36,8 +38,8 @@ gcloud run deploy dpr-slm-service \
 SLM_SERVICE_URL=$(gcloud run services describe dpr-slm-service --region=$REGION --format='value(status.url)' 2>/dev/null || echo "")
 echo "SLM Service URL: $SLM_SERVICE_URL"
 
-# Wait for SLM service to be ready (model loading takes 180-240s on CPU)
-echo "Waiting for SLM service to be ready (this may take 3-5 minutes for model loading)..."
+# Wait for SLM service to be ready (GPU model loading ~30-60s including warmup)
+echo "Waiting for SLM service to be ready (GPU model loading + warmup)..."
 MAX_WAIT=300  # 5 minutes max
 ELAPSED=0
 while [ $ELAPSED -lt $MAX_WAIT ]; do

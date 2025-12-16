@@ -363,28 +363,66 @@ fi
 
 # --- Step 8: Cleanup ---
 echo ""
-echo "--- Step 8: Cleanup (Deleting Cloud Run Services) ---"
-echo "Deleting Cloud Run services to avoid ongoing charges..."
-echo "(GCS data is preserved for future runs)"
+echo "--- Step 8: Cleanup Options ---"
+echo ""
+echo "Services are currently running:"
+echo "  - SLM Service (GPU): ~\$18/day"
+echo "  - Active Controller: ~\$1/day"
+echo "  - Passive Worker: ~\$1/day"
+echo ""
+echo "Options:"
+echo "  [1] Keep services running for rapid iteration (auto-teardown in 15 min)"
+echo "  [2] Tear down services now"
 echo ""
 
-# Delete services (ignore errors if they don't exist)
-gcloud run services delete dpr-active-controller --region=$REGION --quiet 2>/dev/null || true
-gcloud run services delete dpr-passive-worker --region=$REGION --quiet 2>/dev/null || true
-gcloud run services delete dpr-passive-workers --region=$REGION --quiet 2>/dev/null || true
-gcloud run services delete dpr-slm-service --region=$REGION --quiet 2>/dev/null || true
-gcloud run services delete dpr-baseline-rag --region=$REGION --quiet 2>/dev/null || true
+# Read user input with 15-minute timeout (900 seconds)
+read -t 900 -p "Choose option [1 or 2] (default: teardown in 15min): " CLEANUP_CHOICE
 
-# Also delete the Memorystore Redis instance if it exists (expensive!)
-REDIS_INSTANCE="dpr-redis"
-if gcloud redis instances describe $REDIS_INSTANCE --region=$REGION >/dev/null 2>&1; then
-    echo "Deleting Redis instance (this takes a few minutes)..."
-    gcloud redis instances delete $REDIS_INSTANCE --region=$REGION --quiet --async
-    echo "Redis deletion initiated (async)"
+# Default to teardown if timeout or invalid input
+if [ -z "$CLEANUP_CHOICE" ]; then
+    echo ""
+    echo "⏱  15-minute timer expired. Initiating teardown..."
+    CLEANUP_CHOICE="2"
+elif [ "$CLEANUP_CHOICE" = "1" ]; then
+    echo ""
+    echo "✓ Keeping services running for rapid iteration"
+    echo "  Services will remain active for testing"
+    echo "  Run this script again to execute another benchmark"
+    echo ""
+    echo "⚠  REMINDER: Run the following when done to avoid charges:"
+    echo "    gcloud run services delete dpr-active-controller --region=$REGION --quiet"
+    echo "    gcloud run services delete dpr-passive-worker --region=$REGION --quiet"
+    echo "    gcloud run services delete dpr-slm-service --region=$REGION --quiet"
+    echo ""
+    # Skip cleanup entirely
+    CLEANUP_CHOICE="skip"
 fi
 
-echo ""
-echo "✓ Cloud Run services deleted"
+if [ "$CLEANUP_CHOICE" != "skip" ]; then
+    echo ""
+    echo "Deleting Cloud Run services to avoid ongoing charges..."
+    echo "(GCS data is preserved for future runs)"
+    echo ""
+
+    # Delete services (ignore errors if they don't exist)
+    gcloud run services delete dpr-active-controller --region=$REGION --quiet 2>/dev/null || true
+    gcloud run services delete dpr-passive-worker --region=$REGION --quiet 2>/dev/null || true
+    gcloud run services delete dpr-passive-workers --region=$REGION --quiet 2>/dev/null || true
+    gcloud run services delete dpr-slm-service --region=$REGION --quiet 2>/dev/null || true
+    gcloud run services delete dpr-baseline-rag --region=$REGION --quiet 2>/dev/null || true
+
+    # Also delete the Memorystore Redis instance if it exists (expensive!)
+    REDIS_INSTANCE="dpr-redis"
+    if gcloud redis instances describe $REDIS_INSTANCE --region=$REGION >/dev/null 2>&1; then
+        echo "Deleting Redis instance (this takes a few minutes)..."
+        gcloud redis instances delete $REDIS_INSTANCE --region=$REGION --quiet --async
+        echo "Redis deletion initiated (async)"
+    fi
+
+    echo ""
+    echo "✓ Cloud Run services deleted"
+fi
+
 echo "✓ GCS bucket gs://${HISTORY_BUCKET}/ preserved (raw data + embeddings)"
 if [ -f "$LOG_FILE" ]; then
     echo "✓ Debug logs saved to: $LOG_FILE"

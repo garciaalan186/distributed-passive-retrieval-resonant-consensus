@@ -250,6 +250,25 @@ def load_model():
         print(f"Model loaded in {load_time:.2f}s")
         print(f"Model memory: {_model.get_memory_footprint() / 1e9:.2f} GB")
 
+        # Warmup inference to trigger JIT compilation and optimize performance
+        print("Running warmup inference to trigger JIT compilation...")
+        warmup_start = time.time()
+        warmup_text = "This is a warmup query to initialize the model and compile operations."
+        warmup_inputs = _tokenizer(warmup_text, return_tensors="pt", padding=True)
+        if DEVICE == "cuda":
+            warmup_inputs = {k: v.cuda() for k, v in warmup_inputs.items()}
+        with torch.no_grad():
+            _ = _model.generate(
+                **warmup_inputs,
+                max_new_tokens=50,
+                temperature=0.7,
+                do_sample=True,
+                pad_token_id=_tokenizer.eos_token_id
+            )
+        warmup_time = time.time() - warmup_start
+        print(f"Warmup completed in {warmup_time:.2f}s")
+        print(f"Total initialization time: {time.time() - start_time:.2f}s")
+
     except Exception as e:
         print(f"Error loading model: {e}")
         raise

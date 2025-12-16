@@ -8,9 +8,9 @@ chromadb==0.4.22
 pydantic==2.5.3
 numpy==1.26.3
 
-# ML/Embeddings - CPU-only PyTorch (no CUDA, ~200MB vs ~2GB)
---extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.1.2+cpu
+# ML/Embeddings - GPU-enabled PyTorch for SLM inference acceleration
+# Note: CPU-only torch is ~200MB, GPU-enabled is ~2GB but provides 10-100x speedup
+torch==2.1.2
 sentence-transformers==2.3.1
 
 # SLM (Small Language Model) for L2 verification
