@@ -374,11 +374,37 @@ def verify_content(query: str, content: str) -> dict:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Load model on startup, cleanup on shutdown."""
-    load_model()
-    print(f"SLM Service ready on port {SLM_PORT}")
-    yield
+    """
+    Server startup/shutdown lifecycle.
+
+    CRITICAL: Model loading happens in background thread to avoid blocking
+    server startup. Cloud Run requires server to accept requests quickly,
+    but model loading takes 60-120s. Health check returns 503 until ready.
+    """
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    # Start model loading in background thread (non-blocking)
+    print(f"Starting SLM service on port {SLM_PORT}")
+    print(f"Model {SLM_MODEL} will load in background...")
+
+    executor = ThreadPoolExecutor(max_workers=1)
+    loop = asyncio.get_event_loop()
+
+    # Schedule model loading to run in background
+    model_load_future = loop.run_in_executor(executor, load_model)
+
+    print(f"Server starting (model loading in background)...")
+
+    yield  # Server starts accepting requests HERE
+
+    # Wait for model to finish loading before shutdown
+    if not model_load_future.done():
+        print("Waiting for model loading to complete before shutdown...")
+        await model_load_future
+
     print("SLM Service shutting down")
+    executor.shutdown(wait=False)
 
 
 app = FastAPI(
