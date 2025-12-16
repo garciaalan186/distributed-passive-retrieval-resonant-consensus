@@ -36,9 +36,9 @@ gcloud run deploy dpr-slm-service \
 SLM_SERVICE_URL=$(gcloud run services describe dpr-slm-service --region=$REGION --format='value(status.url)' 2>/dev/null || echo "")
 echo "SLM Service URL: $SLM_SERVICE_URL"
 
-# Wait for SLM service to be ready (model loading takes 60-120s)
-echo "Waiting for SLM service to be ready (this may take 1-2 minutes for model loading)..."
-MAX_WAIT=180  # 3 minutes max
+# Wait for SLM service to be ready (model loading takes 180-240s on CPU)
+echo "Waiting for SLM service to be ready (this may take 3-5 minutes for model loading)..."
+MAX_WAIT=300  # 5 minutes max
 ELAPSED=0
 while [ $ELAPSED -lt $MAX_WAIT ]; do
     HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${SLM_SERVICE_URL}/ready" || echo "000")

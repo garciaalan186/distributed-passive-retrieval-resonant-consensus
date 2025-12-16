@@ -68,7 +68,20 @@ PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format='value(projectNum
 gsutil iam ch "serviceAccount:${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com:objectAdmin" "gs://${HISTORY_BUCKET}" 2>/dev/null || true
 # Grant Compute Engine default service account access (used by Cloud Build workers)
 gsutil iam ch "serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com:objectAdmin" "gs://${HISTORY_BUCKET}" 2>/dev/null || true
-echo "✓ Bucket permissions configured"
+
+# CRITICAL FIX: Grant Cloud Run service account access to GCS bucket
+# Cloud Run services use the default Compute Engine service account
+echo "Granting Cloud Run service account GCS access..."
+COMPUTE_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+# Grant objectAdmin for full read/write access
+gsutil iam ch "serviceAccount:${COMPUTE_SA}:objectAdmin" "gs://${HISTORY_BUCKET}" 2>/dev/null || true
+# Also try roles/storage.objectAdmin for compatibility
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:${COMPUTE_SA}" \
+  --role="roles/storage.objectAdmin" \
+  --condition=None 2>/dev/null || true
+
+echo "✓ Bucket permissions configured (Cloud Build + Cloud Run)"
 
 # --- Step 2: Infrastructure Setup ---
 echo ""
@@ -186,16 +199,68 @@ else
         --quiet || true
 fi
 
-# --- Step 5: Get Controller URL ---
+# --- Step 5: Get Service URLs ---
 echo ""
-echo "--- Step 5: Resolving Endpoint ---"
+echo "--- Step 5: Resolving Endpoints ---"
 CONTROLLER_URL=$(gcloud run services describe dpr-active-controller --region=$REGION --format='value(status.url)' 2>/dev/null || echo "")
+SLM_SERVICE_URL=$(gcloud run services describe dpr-slm-service --region=$REGION --format='value(status.url)' 2>/dev/null || echo "")
+WORKER_URL=$(gcloud run services describe dpr-passive-worker --region=$REGION --format='value(status.url)' 2>/dev/null || echo "")
 
 if [ -z "$CONTROLLER_URL" ]; then
     echo "Warning: Could not get controller URL. Services may not be deployed."
     echo "Skipping benchmark execution."
 else
     echo "Controller URL: $CONTROLLER_URL"
+    echo "SLM Service URL: $SLM_SERVICE_URL"
+    echo "Worker URL: $WORKER_URL"
+
+    # --- Step 5.5: Verify All Services Are Ready ---
+    echo ""
+    echo "--- Step 5.5: Verifying Service Readiness ---"
+
+    # Check SLM service is ready
+    echo "Checking SLM service..."
+    MAX_WAIT=300
+    ELAPSED=0
+    while [ $ELAPSED -lt $MAX_WAIT ]; do
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${SLM_SERVICE_URL}/ready" 2>/dev/null || echo "000")
+        if [ "$HTTP_CODE" = "200" ]; then
+            echo "✓ SLM service is ready"
+            break
+        fi
+        if [ $ELAPSED -eq 0 ]; then
+            echo "  Waiting for SLM service to load model (this may take 3-5 minutes)..."
+        fi
+        sleep 10
+        ELAPSED=$((ELAPSED + 10))
+    done
+
+    if [ $ELAPSED -ge $MAX_WAIT ]; then
+        echo "✗ ERROR: SLM service did not become ready within ${MAX_WAIT}s"
+        echo "  Cannot run benchmark with SLM service unavailable"
+        exit 1
+    fi
+
+    # Check Controller service is ready
+    echo "Checking Active Controller..."
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${CONTROLLER_URL}/health" 2>/dev/null || echo "000")
+    if [ "$HTTP_CODE" = "200" ]; then
+        echo "✓ Active Controller is ready"
+    else
+        echo "⚠ WARNING: Active Controller health check returned HTTP $HTTP_CODE"
+    fi
+
+    # Check Worker service is ready
+    echo "Checking Passive Worker..."
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${WORKER_URL}/health" 2>/dev/null || echo "000")
+    if [ "$HTTP_CODE" = "200" ]; then
+        echo "✓ Passive Worker is ready"
+    else
+        echo "⚠ WARNING: Passive Worker health check returned HTTP $HTTP_CODE"
+    fi
+
+    echo ""
+    echo "All critical services verified. Starting benchmark..."
 
     # --- Step 6: Run Benchmark in Cloud Build ---
     echo ""
@@ -222,6 +287,7 @@ steps:
       - 'benchmark.research_benchmark'
     env:
       - 'CONTROLLER_URL=${CONTROLLER_URL}'
+      - 'SLM_SERVICE_URL=${SLM_SERVICE_URL}'
       - 'HISTORY_BUCKET=${HISTORY_BUCKET}'
       - 'HISTORY_SCALE=${BENCHMARK_SCALE}'
       - 'BENCHMARK_SCALE=${BENCHMARK_SCALE}'
@@ -254,6 +320,47 @@ else
     echo "Note: Results are in Cloud Build logs (benchmark ran in cloud)"
 fi
 
+# --- Step 7.5: Download Debug Logs (before service deletion) ---
+echo ""
+echo "--- Step 7.5: Downloading Debug Logs ---"
+LOG_FILE="${RESULTS_DIR}/debug_logs_${BENCHMARK_SCALE}_$(date +%Y%m%d_%H%M%S).txt"
+
+if [ "$DEBUG_BREAKPOINTS" = "true" ]; then
+    echo "Downloading debug logs from Cloud Logging..."
+    gcloud logging read \
+        "resource.type=cloud_run_revision AND (resource.labels.service_name=dpr-active-controller OR resource.labels.service_name=dpr-passive-worker OR resource.labels.service_name=dpr-slm-service) AND timestamp>=\"$(date -u -d '30 minutes ago' '+%Y-%m-%dT%H:%M:%SZ')\"" \
+        --project="$PROJECT_ID" \
+        --format='value(timestamp, resource.labels.service_name, severity, textPayload)' \
+        --limit=10000 \
+        > "$LOG_FILE" 2>/dev/null || true
+
+    if [ -s "$LOG_FILE" ]; then
+        echo "✓ Debug logs saved to: $LOG_FILE"
+        LOG_SIZE=$(wc -l < "$LOG_FILE" | tr -d ' ')
+        echo "  ($LOG_SIZE log entries)"
+    else
+        echo "⚠ No debug logs found (services may not have generated debug output)"
+        rm -f "$LOG_FILE"
+    fi
+else
+    echo "Downloading service logs (last 30 minutes)..."
+    gcloud logging read \
+        "resource.type=cloud_run_revision AND (resource.labels.service_name=dpr-active-controller OR resource.labels.service_name=dpr-passive-worker OR resource.labels.service_name=dpr-slm-service) AND timestamp>=\"$(date -u -d '30 minutes ago' '+%Y-%m-%dT%H:%M:%SZ')\"" \
+        --project="$PROJECT_ID" \
+        --format='value(timestamp, resource.labels.service_name, severity, textPayload)' \
+        --limit=5000 \
+        > "$LOG_FILE" 2>/dev/null || true
+
+    if [ -s "$LOG_FILE" ]; then
+        echo "✓ Service logs saved to: $LOG_FILE"
+        LOG_SIZE=$(wc -l < "$LOG_FILE" | tr -d ' ')
+        echo "  ($LOG_SIZE log entries)"
+    else
+        echo "⚠ No service logs found"
+        rm -f "$LOG_FILE"
+    fi
+fi
+
 # --- Step 8: Cleanup ---
 echo ""
 echo "--- Step 8: Cleanup (Deleting Cloud Run Services) ---"
@@ -279,8 +386,17 @@ fi
 echo ""
 echo "✓ Cloud Run services deleted"
 echo "✓ GCS bucket gs://${HISTORY_BUCKET}/ preserved (raw data + embeddings)"
+if [ -f "$LOG_FILE" ]; then
+    echo "✓ Debug logs saved to: $LOG_FILE"
+fi
 echo ""
 echo "=== DPR-RC Cloud Benchmark Complete ==="
+echo ""
+echo "Results Location:"
+echo "  - Benchmark outputs: ${RESULTS_DIR}/"
+if [ -f "$LOG_FILE" ]; then
+    echo "  - Service logs: $LOG_FILE"
+fi
 echo ""
 echo "To re-run benchmarks, simply run ./run_cloud_benchmark.sh again."
 echo "The script will reuse existing GCS data and redeploy services."
