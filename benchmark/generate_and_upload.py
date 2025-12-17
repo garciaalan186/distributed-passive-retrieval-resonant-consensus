@@ -3,9 +3,11 @@ Generate synthetic history data and upload to GCS for reuse.
 
 This script:
 1. Generates phonotactic synthetic history data (once)
-2. Saves raw JSON (text only) to GCS
-3. Computes embeddings and saves to separate model-specific folder
-4. Workers download and ingest on startup (no regeneration)
+2. Applies tempo-normalized segmentation with density constraints
+3. Computes causal closure and generates foveated summaries
+4. Saves raw JSON (text only) + indices to GCS
+5. Computes embeddings and saves to separate model-specific folder
+6. Workers download and ingest on startup (no regeneration)
 
 GCS Storage Structure:
     gs://{bucket}/
@@ -14,14 +16,24 @@ GCS Storage Structure:
     │       ├── dataset.json         # Full dataset metadata
     │       ├── glossary.json        # Term glossary
     │       └── shards/
-    │           ├── shard_2020.json  # Plain text events by year
-    │           └── shard_2021.json
+    │           ├── shard_001_2015-01_2015-09.json  # Tempo-normalized shards
+    │           └── shard_002_2015-09_2016-03.json
+    ├── indices/
+    │   └── {scale}/
+    │       ├── shard_manifest.json  # Shard metadata
+    │       ├── causal_index.json    # Cross-shard dependencies
+    │       └── causal_closure.json  # Transitive closure
+    ├── foveated/
+    │   └── {scale}/
+    │       ├── summaries_L1.json    # Shard summaries (4K tokens)
+    │       ├── summaries_L2.json    # Epoch summaries (2K tokens)
+    │       └── summaries_L3.json    # Domain summaries (1K tokens)
     └── embeddings/
         └── {model_id}/
             └── {scale}/
                 └── shards/
-                    ├── shard_2020.npz  # Pre-computed vectors
-                    └── shard_2021.npz
+                    ├── shard_001_2015-01_2015-09.npz  # Pre-computed vectors
+                    └── shard_002_2015-09_2016-03.npz
 
 Usage:
     python -m benchmark.generate_and_upload [--force] [--scale medium] [--skip-embeddings]
@@ -60,6 +72,22 @@ except ImportError:
     print("Warning: google-cloud-storage not installed. Install with: pip install google-cloud-storage")
 
 from .synthetic_history import SyntheticHistoryGeneratorV2
+
+# Tempo-normalized sharding modules
+from .segmentation import (
+    TempoNormalizer,
+    BoundaryDetector,
+    DensityOptimizer,
+    CausalAwarePartitioner,
+    CORRECTED_MAX_SHARD_TOKENS
+)
+from .indices import (
+    CausalClosure,
+    CausalIndex,
+    ShardManifest,
+    Shard as ShardMetadata
+)
+from .foveation import LayerGenerator, COMPRESSION_RATIOS
 
 # Import embedding utilities
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -125,6 +153,165 @@ def upload_to_gcs(local_path: Path, gcs_path: str):
     print(f"  Uploaded: gs://{HISTORY_BUCKET}/{gcs_path}")
 
 
+def create_tempo_normalized_shards(dataset: Dict, local_dir: Path) -> Dict:
+    """
+    Apply tempo-normalized sharding pipeline to dataset.
+
+    Pipeline:
+    1. Compute causal closure
+    2. Detect tempo-normalized boundaries
+    3. Apply density constraints (H_max = 20K tokens)
+    4. Refine for causal chain preservation
+    5. Generate foveated summaries (L_1, L_2, L_3)
+    6. Create shard manifest and causal index
+
+    Args:
+        dataset: Full dataset from synthetic_history
+        local_dir: Local directory for output
+
+    Returns:
+        Dict with shards, indices, and foveated layers
+    """
+    events = dataset['events']
+    causal_graph_data = dataset.get('causal_graph', {})
+
+    print(f"    Computing causal closure for {len(events)} events...")
+
+    # Step 1: Compute causal closure
+    causal_closure = CausalClosure()
+    causal_closure.build_from_events(events)
+
+    # Step 2: Detect tempo-normalized boundaries
+    # (Note: We need embeddings for coherence analysis, but we'll use a simplified
+    #  version without embeddings for now, relying on tempo and domain signals)
+    print(f"    Detecting tempo-normalized boundaries...")
+    boundary_detector = BoundaryDetector()
+
+    # Create dummy embeddings dict (will be populated during embedding phase)
+    # For now, boundaries will be based on tempo and domain signals only
+    dummy_embeddings = {}
+
+    boundaries = boundary_detector.detect_boundaries(events, dummy_embeddings)
+    print(f"    Found {len(boundaries)} candidate boundaries")
+
+    # Step 3: Apply density constraints
+    print(f"    Applying density constraints (H_max = {CORRECTED_MAX_SHARD_TOKENS} tokens)...")
+    density_optimizer = DensityOptimizer(max_tokens=CORRECTED_MAX_SHARD_TOKENS)
+    shards = density_optimizer.apply_density_constraints(boundaries, events)
+    print(f"    Created {len(shards)} shards (density-constrained)")
+
+    # Step 4: Refine for causal chain preservation
+    print(f"    Refining boundaries for causal chain preservation...")
+    causal_partitioner = CausalAwarePartitioner()
+
+    # Refine boundaries
+    refined_boundaries = causal_partitioner.refine_boundaries_for_causality(
+        boundaries, events, causal_closure
+    )
+    print(f"    Refined to {len(refined_boundaries)} boundaries (causal-aware)")
+
+    # Re-apply density constraints with refined boundaries
+    shards = density_optimizer.apply_density_constraints(refined_boundaries, events)
+
+    # Enrich shards with causal context
+    events_by_id = {e.get('id', ''): e for e in events}
+    causal_partitioner.enrich_shards_with_causal_context(
+        shards, causal_closure, events_by_id
+    )
+
+    # Validate no splits
+    if causal_partitioner.validate_no_splits(shards, causal_closure):
+        print(f"    ✓ Causal chain integrity validated")
+    else:
+        print(f"    ⚠ WARNING: Some causal chains may be split")
+
+    # Step 5: Generate foveated summaries
+    # (Skip for now - requires SLM service, will implement in follow-up)
+    print(f"    Generating foveated summaries (stub for now)...")
+    layer_generator = LayerGenerator(slm_service=None)  # No SLM for now
+
+    # Convert shards to dict format for summaries
+    shards_dict = [{'id': s.id, 'events': s.events} for s in shards]
+    l1_summaries = layer_generator.generate_l1_summaries(shards_dict)
+    l2_summaries = layer_generator.generate_l2_summaries(l1_summaries)
+    l3_summaries = layer_generator.generate_l3_summaries(events)
+
+    # Step 6: Create manifest and index
+    print(f"    Building shard manifest and causal index...")
+    manifest = ShardManifest()
+    manifest.algorithm = "tempo_normalized_density_constrained_causal_aware"
+    manifest.parameters = {
+        "H_max": CORRECTED_MAX_SHARD_TOKENS,
+        "theta_sim": 0.4,
+        "tau_min": 86400,
+        "k_iqr": 1.5,
+        "compression_ratios": COMPRESSION_RATIOS
+    }
+
+    for shard in shards:
+        manifest.add_shard(ShardMetadata(
+            id=shard.id,
+            filename=f"{shard.id}.json",
+            time_range={
+                'start': shard.time_range[0],
+                'end': shard.time_range[1]
+            },
+            event_count=len(shard.events),
+            token_count=shard.token_count,
+            boundary_signals=shard.boundary_signals,
+            causal_context={
+                'ancestor_shards': shard.causal_ancestors,
+                'descendant_shards': shard.causal_descendants
+            },
+            foveated_summaries={
+                'L1_summary_id': f"summary_L1_{shard.id}",
+                'L2_epoch_id': '',  # Will be populated later
+                'L3_domains': []
+            }
+        ))
+
+    manifest.compute_statistics()
+
+    # Build causal index
+    causal_index = CausalIndex()
+    causal_index.build_from_shards_and_closure(shards_dict, causal_closure)
+
+    # Save everything to local directories
+    shards_dir = local_dir / "shards"
+    indices_dir = local_dir / "indices"
+    foveated_dir = local_dir / "foveated"
+
+    shards_dir.mkdir(parents=True, exist_ok=True)
+    indices_dir.mkdir(parents=True, exist_ok=True)
+    foveated_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save shards
+    for shard in shards:
+        shard_path = shards_dir / f"{shard.id}.json"
+        with open(shard_path, "w") as f:
+            json.dump(shard.events, f)
+
+    # Save indices
+    causal_closure.save_to_file(str(indices_dir / "causal_closure.json"))
+    causal_index.save_to_file(str(indices_dir / "causal_index.json"))
+    manifest.save_to_file(str(indices_dir / "shard_manifest.json"))
+
+    # Save foveated layers
+    layer_generator.save_summaries(l1_summaries, str(foveated_dir / "summaries_L1.json"))
+    layer_generator.save_summaries(l2_summaries, str(foveated_dir / "summaries_L2.json"))
+    layer_generator.save_summaries(l3_summaries, str(foveated_dir / "summaries_L3.json"))
+
+    return {
+        'shards': shards,
+        'shards_dir': shards_dir,
+        'indices_dir': indices_dir,
+        'foveated_dir': foveated_dir,
+        'manifest': manifest,
+        'causal_closure': causal_closure,
+        'causal_index': causal_index
+    }
+
+
 def generate_raw_data(scale: str, config: dict, local_dir: Path) -> Dict:
     """Generate raw synthetic data and save locally."""
     print(f"  Generating dataset...")
@@ -150,43 +337,48 @@ def generate_raw_data(scale: str, config: dict, local_dir: Path) -> Dict:
     with open(glossary_path, "w") as f:
         json.dump(glossary, f)
 
-    # Create shard files (events grouped by year)
-    shards_dir = local_dir / "shards"
-    shards_dir.mkdir(parents=True, exist_ok=True)
+    # Apply tempo-normalized sharding pipeline
+    print("  Applying tempo-normalized sharding pipeline...")
+    shard_data = create_tempo_normalized_shards(
+        dataset=dataset,
+        local_dir=local_dir
+    )
 
-    events_by_year = {}
-    for event in dataset['events']:
-        year = event['timestamp'][:4]
-        if year not in events_by_year:
-            events_by_year[year] = []
-        events_by_year[year].append(event)
-
-    for year, events in events_by_year.items():
-        shard_path = shards_dir / f"shard_{year}.json"
-        with open(shard_path, "w") as f:
-            json.dump(events, f)
-
-    print(f"  Created {len(events_by_year)} shard files")
+    print(f"  Created {len(shard_data['shards'])} tempo-normalized shards")
+    print(f"  Compression ratios: L0->L1={COMPRESSION_RATIOS['L0_to_L1']}:1, "
+          f"L1->L2={COMPRESSION_RATIOS['L1_to_L2']}:1, "
+          f"L2->L3={COMPRESSION_RATIOS['L2_to_L3']}:1")
 
     return {
         "dataset_path": dataset_path,
         "glossary_path": glossary_path,
-        "shards_dir": shards_dir,
-        "events_by_year": events_by_year
+        "shard_data": shard_data
     }
 
 
 def upload_raw_to_gcs(scale: str, local_data: Dict):
-    """Upload raw JSON data to GCS."""
+    """Upload raw JSON data + indices + foveated layers to GCS."""
     print(f"  Uploading raw data to GCS...")
 
     # Upload dataset and glossary
     upload_to_gcs(local_data["dataset_path"], f"raw/{scale}/dataset.json")
     upload_to_gcs(local_data["glossary_path"], f"raw/{scale}/glossary.json")
 
+    shard_data = local_data["shard_data"]
+
     # Upload shard files
-    for shard_file in local_data["shards_dir"].glob("*.json"):
+    for shard_file in shard_data["shards_dir"].glob("*.json"):
         upload_to_gcs(shard_file, f"raw/{scale}/shards/{shard_file.name}")
+
+    # Upload indices
+    print(f"  Uploading indices...")
+    for index_file in shard_data["indices_dir"].glob("*.json"):
+        upload_to_gcs(index_file, f"indices/{scale}/{index_file.name}")
+
+    # Upload foveated layers
+    print(f"  Uploading foveated summaries...")
+    for foveated_file in shard_data["foveated_dir"].glob("*.json"):
+        upload_to_gcs(foveated_file, f"foveated/{scale}/{foveated_file.name}")
 
 
 def _embed_single_shard(args: Tuple[str, List[Dict], str, str, str]) -> Tuple[str, bool, str]:
