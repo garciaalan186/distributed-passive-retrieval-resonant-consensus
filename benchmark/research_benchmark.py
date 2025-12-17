@@ -20,6 +20,7 @@ from pathlib import Path
 import requests
 
 from .synthetic_history import SyntheticHistoryGeneratorV2
+from benchmark.domain.services import EvaluationService
 
 
 @dataclass
@@ -88,13 +89,18 @@ class ResearchBenchmarkSuite:
 
         print(f"Benchmark will run scales: {[s['name'] for s in self.scale_levels]}")
 
-        self.controller_url = os.getenv("CONTROLLER_URL", "http://localhost:8080/query")
-        if not self.controller_url.endswith("/query"):
-            self.controller_url = f"{self.controller_url.rstrip('/')}/query"
+        # Executor configuration
+        # USE_NEW_EXECUTOR=true enables direct use case execution (benchmark purity)
+        # USE_NEW_EXECUTOR=false uses HTTP mode (cloud deployments)
+        self.use_new_executor = os.getenv("USE_NEW_EXECUTOR", "false").lower() == "true"
 
-        # SLM service for hallucination detection
+        # URLs for both modes
+        self.controller_url = os.getenv("CONTROLLER_URL", "http://localhost:8080")
+        self.worker_url = os.getenv("PASSIVE_WORKER_URL", "http://localhost:8082")
         self.slm_service_url = os.getenv("SLM_SERVICE_URL", "http://localhost:8081")
         self.slm_timeout = float(os.getenv("SLM_TIMEOUT", "30.0"))
+
+        print(f"Executor mode: {'UseCase (direct)' if self.use_new_executor else 'HTTP'}")
         
     def run_full_benchmark(self):
         """Execute complete benchmark across all scale levels"""
@@ -181,65 +187,78 @@ class ResearchBenchmarkSuite:
         }
     
     def run_dprrc_queries(self, queries: List[Dict], results_dir: Path) -> List[Dict]:
-        """Run queries against DPR-RC with full audit trail capture"""
-        
+        """
+        Run queries against DPR-RC with full audit trail capture.
+
+        Uses either HTTP mode or UseCase mode based on USE_NEW_EXECUTOR flag.
+        Both modes produce identical results, just via different transport layers.
+        """
+        import asyncio
+        from benchmark.infrastructure.executors import create_dprrc_executor
+
         results_dir.mkdir(exist_ok=True)
         results = []
-        
+
+        # Create executor based on mode
+        executor = create_dprrc_executor(
+            use_new_executor=self.use_new_executor,
+            controller_url=self.controller_url,
+            worker_url=self.worker_url,
+            slm_url=self.slm_service_url,
+            timeout=60.0,
+            enable_query_enhancement=True
+        )
+
+        print(f"Using executor mode: {executor.execution_mode}")
+
         for i, query in enumerate(queries):
             query_id = f"query_{i:04d}"
             query_dir = results_dir / query_id
             query_dir.mkdir(exist_ok=True)
-            
+
             # Save input
             self._save_json({
                 "query_text": query["question"],
                 "timestamp_context": query.get("timestamp_context"),
                 "query_type": query.get("type")
             }, query_dir / "input.json")
-            
+
             # Save ground truth
             self._save_json({
                 "expected_consensus": query.get("expected_consensus", []),
                 "expected_disputed": query.get("expected_disputed", []),
                 "expected_sources": query.get("expected_sources", [])
             }, query_dir / "ground_truth.json")
-            
-            # Execute query
+
+            # Execute query via executor (async)
             try:
-                start = time.perf_counter()
-                response = requests.post(
-                    self.controller_url,
-                    json={
-                        "query_text": query["question"],
-                        "timestamp_context": query.get("timestamp_context"),
-                        "trace_id": query_id
-                    },
-                    timeout=60
-                )
-                latency_ms = (time.perf_counter() - start) * 1000
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    
+                result = asyncio.run(executor.execute(
+                    query=query["question"],
+                    query_id=query_id,
+                    timestamp_context=query.get("timestamp_context")
+                ))
+
+                if result.success:
                     # Save system output
                     self._save_json({
-                        "final_response": data.get("final_answer", ""),
-                        "confidence": data.get("confidence", 0),
-                        "sources": data.get("sources", []),
-                        "status": data.get("status", "SUCCESS")
+                        "final_response": result.response,
+                        "confidence": result.confidence,
+                        "sources": result.metadata.get("sources", []),
+                        "status": result.metadata.get("status", "SUCCESS"),
+                        "execution_mode": result.metadata.get("execution_mode")
                     }, query_dir / "system_output.json")
-                    
-                    # Fetch audit trail from Cloud Logging
-                    audit_trail = self._fetch_audit_trail(query_id)
-                    if audit_trail:
-                        self._save_json(audit_trail, query_dir / "audit_trail.json")
-                    
+
+                    # Fetch audit trail from Cloud Logging (only for HTTP mode)
+                    if executor.execution_mode == "http":
+                        audit_trail = self._fetch_audit_trail(query_id)
+                        if audit_trail:
+                            self._save_json(audit_trail, query_dir / "audit_trail.json")
+
                     results.append({
                         "query_id": query_id,
-                        "response": data.get("final_answer", ""),
-                        "confidence": data.get("confidence", 0),
-                        "latency_ms": latency_ms,
+                        "response": result.response,
+                        "confidence": result.confidence,
+                        "latency_ms": result.latency_ms,
                         "success": True
                     })
                 else:
@@ -247,11 +266,11 @@ class ResearchBenchmarkSuite:
                         "query_id": query_id,
                         "response": "",
                         "confidence": 0,
-                        "latency_ms": latency_ms,
+                        "latency_ms": result.latency_ms,
                         "success": False,
-                        "error": response.text
+                        "error": result.error
                     })
-                    
+
             except Exception as e:
                 results.append({
                     "query_id": query_id,
@@ -261,7 +280,7 @@ class ResearchBenchmarkSuite:
                     "success": False,
                     "error": str(e)
                 })
-        
+
         return results
     
     def run_baseline_queries(self, queries: List[Dict], results_dir: Path) -> List[Dict]:
@@ -458,13 +477,22 @@ class ResearchBenchmarkSuite:
             valid_terms.add(domain_name)
 
         # Common English words that should NOT be flagged
+        # FIX: Expanded whitelist to prevent false positives on common words
         common_words = {
+            # Articles and basic words
             'No', 'Yes', 'The', 'A', 'An', 'In', 'On', 'At', 'To', 'For', 'Of', 'With',
             'By', 'From', 'As', 'Is', 'Are', 'Was', 'Were', 'Be', 'Been', 'Being',
             'Have', 'Has', 'Had', 'Do', 'Does', 'Did', 'Will', 'Would', 'Should',
             'Could', 'May', 'Might', 'Must', 'Can', 'This', 'That', 'These', 'Those',
+            # Academic/research terms
             'Research', 'Study', 'Analysis', 'Results', 'Data', 'Findings', 'Progress',
-            'Development', 'Breakthrough', 'Discovery', 'Experiment', 'Observation'
+            'Development', 'Breakthrough', 'Discovery', 'Experiment', 'Observation',
+            'Review', 'Article', 'Team', 'New', 'Significant', 'Discussion',
+            'Implications', 'Focusing', 'Through', 'Challenges', 'Remain',
+            # Actions/states
+            'Aligns', 'Driven', 'Conclusions', 'Drawn', 'Protocol', 'Predictions',
+            'Status', 'Milestone', 'Progress', 'Achieved', 'Improved', 'Showing',
+            'Improvement', 'Point', 'Area', 'Metrics', 'Domain'
         }
 
         # Extract capitalized words (potential proper nouns/terms)
@@ -509,6 +537,117 @@ class ResearchBenchmarkSuite:
                 "flagged_content": []
             }
 
+    def _extract_valid_terms(self, glossary: Dict) -> List[str]:
+        """Extract valid terms from glossary for hallucination detection."""
+        valid_terms = []
+
+        # Add physics terms
+        if 'physics' in glossary:
+            valid_terms.extend(list(glossary.get('physics', {}).get('particles', {}).keys())[:20])
+            valid_terms.extend(list(glossary.get('physics', {}).get('phenomena', {}).keys())[:20])
+
+        # Add domain terms
+        for domain_name, domain_data in glossary.get('domains', {}).items():
+            valid_terms.extend(list(domain_data.get('concepts', {}).keys())[:10])
+
+        # Limit to reasonable size (SLM will sample further)
+        return valid_terms[:50]
+
+    def batch_detect_hallucination_via_slm(
+        self,
+        check_requests: List[Dict]
+    ) -> List[Dict]:
+        """
+        Batch hallucination detection - sends multiple requests in one HTTP call.
+
+        Args:
+            check_requests: List of dicts with keys:
+                - query: str
+                - system_response: str
+                - ground_truth: dict
+                - valid_terms: list[str]
+                - confidence: float
+                - trace_id: str (optional)
+
+        Returns:
+            List of hallucination detection results in same order as requests
+        """
+        if not check_requests:
+            return []
+
+        # If SLM service URL is not configured, fall back to rule-based detection
+        if not self.slm_service_url:
+            print("No SLM service URL configured, using fallback detection for all requests")
+            return [
+                self._fallback_hallucination_detection(
+                    req["system_response"],
+                    {"physics": {"particles": {t: {} for t in req["valid_terms"]}}},
+                    req["confidence"]
+                )
+                for req in check_requests
+            ]
+
+        try:
+            # Make batch request to SLM service
+            response = requests.post(
+                f"{self.slm_service_url}/batch_check_hallucination",
+                json=check_requests,
+                timeout=self.slm_timeout * 2  # Longer timeout for batch
+            )
+
+            if response.status_code == 200:
+                batch_response = response.json()
+                results = batch_response.get("results", [])
+
+                # Validate response count matches request count
+                if len(results) != len(check_requests):
+                    print(f"Batch response count mismatch: got {len(results)}, expected {len(check_requests)}")
+                    # Fall back to individual detection for all requests
+                    return [
+                        self._fallback_hallucination_detection(
+                            req["system_response"],
+                            {"physics": {"particles": {t: {} for t in req["valid_terms"]}}},
+                            req["confidence"]
+                        )
+                        for req in check_requests
+                    ]
+
+                # Convert results to expected format
+                formatted_results = []
+                for result in results:
+                    formatted_results.append({
+                        "has_hallucination": result.get("has_hallucination", False),
+                        "hallucination_type": result.get("hallucination_type"),
+                        "explanation": result.get("explanation", ""),
+                        "severity": result.get("severity", "none"),
+                        "flagged_content": result.get("flagged_content", [])
+                    })
+
+                return formatted_results
+            else:
+                print(f"Batch hallucination detection failed: HTTP {response.status_code}")
+                # Fall back to individual detection for all requests
+                return [
+                    self._fallback_hallucination_detection(
+                        req["system_response"],
+                        {"physics": {"particles": {t: {} for t in req["valid_terms"]}}},
+                        req["confidence"]
+                    )
+                    for req in check_requests
+                ]
+
+        except Exception as e:
+            print(f"Error in batch hallucination detection: {e}")
+            # Fall back to individual detection for all requests
+            return [
+                self._fallback_hallucination_detection(
+                    req["system_response"],
+                    {"physics": {"particles": {t: {} for t in req["valid_terms"]}}},
+                    req["confidence"]
+                )
+                for req in check_requests
+            ]
+
     def compare_results(
         self,
         queries: List[Dict],
@@ -516,107 +655,140 @@ class ResearchBenchmarkSuite:
         baseline_results: List[Dict],
         glossary: Dict
     ) -> Dict:
-        """Compare DPR-RC vs baseline with superposition-aware evaluation"""
-        
+        """
+        Compare DPR-RC vs baseline with superposition-aware evaluation.
+
+        Uses batch hallucination detection for efficiency. Requests are queued
+        in INTERLEAVED order (dprrc_0, baseline_0, dprrc_1, baseline_1, ...)
+        rather than grouped order. This interleaving ensures:
+        - Balanced load if batch is split across SLM instances
+        - Easier debugging (requests correspond to query iteration order)
+        - Natural result ordering for sequential processing
+
+        Args:
+            queries: List of query dicts with question, expected_consensus, expected_disputed
+            dprrc_results: List of DPR-RC query results
+            baseline_results: List of baseline query results
+            glossary: Valid phonotactic terms for hallucination detection
+
+        Returns:
+            Dict with correctness rates, hallucination counts, latency stats
+        """
+
         dprrc_correct = 0
         baseline_correct = 0
         dprrc_hallucinations = []
         baseline_hallucinations = []
         dprrc_latencies = []
         baseline_latencies = []
-        
+
+        # Batch hallucination detection requests
+        hallucination_check_requests = []
+        request_metadata = []  # Track which requests are for dprrc vs baseline
+
         for i, query in enumerate(queries):
             dprrc = dprrc_results[i] if i < len(dprrc_results) else {"success": False}
             baseline = baseline_results[i] if i < len(baseline_results) else {"success": False}
-            
-            # Extract expected entities from query (phonotactic terms)
-            question_entities = [w for w in query["question"].split() if w and w[0].isupper()]
-            
+
+            # Extract expected entities from query using EvaluationService
+            question_entities = EvaluationService.extract_entities_from_question(
+                query["question"]
+            )
+
+            ground_truth = {
+                "expected_consensus": query.get("expected_consensus", []),
+                "expected_disputed": query.get("expected_disputed", [])
+            }
+
             # Evaluate DPR-RC (superposition-aware)
             if dprrc.get("success"):
                 response = dprrc.get("response", "")
                 confidence = dprrc.get("confidence", 0)
-                
-                # Split response into potential options (naive split by newline or bullets)
-                options = [opt for opt in response.replace("- ", "\n").split("\n") if len(opt.strip()) > 10]
-                if not options: 
-                    options = [response]
 
-                # Check if correct answer is present in ANY option
-                any_option_correct = False
-                for opt in options:
-                    hit_count = sum(1 for e in question_entities if e in opt)
-                    recall = hit_count / len(question_entities) if question_entities else 0
-                    if recall > 0.5:
-                        any_option_correct = True
-                        break
-                
-                if any_option_correct:
+                # Use EvaluationService for correctness check
+                correctness_result = EvaluationService.evaluate_superposition_correctness(
+                    response=response,
+                    expected_entities=question_entities,
+                    recall_threshold=0.5,
+                    min_response_length=10
+                )
+
+                if correctness_result.is_correct:
                     dprrc_correct += 1
 
-                # Check for hallucinations using SLM-based semantic detection
-                ground_truth = {
-                    "expected_consensus": query.get("expected_consensus", []),
-                    "expected_disputed": query.get("expected_disputed", [])
-                }
-
-                hallucination_result = self.detect_hallucination_via_slm(
-                    query=query.get("question", ""),
-                    ground_truth=ground_truth,
-                    system_response=response,
-                    glossary=glossary,
-                    confidence=confidence
-                )
-
-                if hallucination_result["has_hallucination"]:
-                    dprrc_hallucinations.append({
-                        "query_id": dprrc.get("query_id"),
-                        "type": hallucination_result["hallucination_type"],
-                        "severity": hallucination_result["severity"],
-                        "explanation": hallucination_result["explanation"],
-                        "flagged_content": hallucination_result["flagged_content"],
-                        "confidence": confidence
-                    })
+                # Queue hallucination check for batch processing
+                hallucination_check_requests.append({
+                    "query": query.get("question", ""),
+                    "system_response": response,
+                    "ground_truth": ground_truth,
+                    "valid_terms": self._extract_valid_terms(glossary),
+                    "confidence": confidence,
+                    "trace_id": dprrc.get("query_id", f"dprrc_{i}")
+                })
+                request_metadata.append({
+                    "type": "dprrc",
+                    "index": i,
+                    "query_id": dprrc.get("query_id"),
+                    "confidence": confidence
+                })
 
                 dprrc_latencies.append(dprrc.get("latency_ms", 0))
-            
-            # Evaluate baseline
+
+            # Evaluate baseline (not superposition-aware)
             if baseline.get("success"):
                 response = baseline.get("response", "")
-                
-                hit_count = sum(1 for e in question_entities if e in response)
-                recall = hit_count / len(question_entities) if question_entities else 0
-                
-                if recall > 0.5 and len(response) > 20:
-                    baseline_correct += 1
 
-                # Check for hallucinations in baseline using same SLM method
-                ground_truth = {
-                    "expected_consensus": query.get("expected_consensus", []),
-                    "expected_disputed": query.get("expected_disputed", [])
-                }
-
-                hallucination_result = self.detect_hallucination_via_slm(
-                    query=query.get("question", ""),
-                    ground_truth=ground_truth,
-                    system_response=response,
-                    glossary=glossary,
-                    confidence=1.0  # Baseline is always confident
+                # Use EvaluationService for correctness check
+                correctness_result = EvaluationService.evaluate_correctness(
+                    response=response,
+                    expected_entities=question_entities,
+                    recall_threshold=0.5,
+                    min_response_length=20
                 )
 
-                if hallucination_result["has_hallucination"]:
-                    baseline_hallucinations.append({
-                        "query_id": baseline.get("query_id"),
-                        "type": hallucination_result["hallucination_type"],
-                        "severity": hallucination_result["severity"],
-                        "explanation": hallucination_result["explanation"],
-                        "flagged_content": hallucination_result["flagged_content"]
-                    })
+                if correctness_result.is_correct:
+                    baseline_correct += 1
+
+                # Queue hallucination check for batch processing
+                hallucination_check_requests.append({
+                    "query": query.get("question", ""),
+                    "system_response": response,
+                    "ground_truth": ground_truth,
+                    "valid_terms": self._extract_valid_terms(glossary),
+                    "confidence": 1.0,  # Baseline is always confident
+                    "trace_id": baseline.get("query_id", f"baseline_{i}")
+                })
+                request_metadata.append({
+                    "type": "baseline",
+                    "index": i,
+                    "query_id": baseline.get("query_id")
+                })
 
                 baseline_latencies.append(baseline.get("latency_ms", 0))
-        
+
+        # Batch process all hallucination checks (I/O stays in this method)
+        if hallucination_check_requests:
+            batch_results = self.batch_detect_hallucination_via_slm(hallucination_check_requests)
+
+            # Process batch results and map back to dprrc/baseline
+            for result, metadata in zip(batch_results, request_metadata):
+                if result["has_hallucination"]:
+                    hallucination_entry = {
+                        "query_id": metadata["query_id"],
+                        "type": result["hallucination_type"],
+                        "severity": result["severity"],
+                        "explanation": result["explanation"],
+                        "flagged_content": result["flagged_content"]
+                    }
+
+                    if metadata["type"] == "dprrc":
+                        hallucination_entry["confidence"] = metadata["confidence"]
+                        dprrc_hallucinations.append(hallucination_entry)
+                    else:  # baseline
+                        baseline_hallucinations.append(hallucination_entry)
+
         total_queries = len(queries)
-        
+
         return {
             "total_queries": total_queries,
             "dprrc_correct_count": dprrc_correct,
