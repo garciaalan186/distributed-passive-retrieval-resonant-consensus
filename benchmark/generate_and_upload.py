@@ -349,10 +349,17 @@ def generate_raw_data(scale: str, config: dict, local_dir: Path) -> Dict:
           f"L1->L2={COMPRESSION_RATIOS['L1_to_L2']}:1, "
           f"L2->L3={COMPRESSION_RATIOS['L2_to_L3']}:1")
 
+    # Create events_by_shard mapping for embedding generation
+    # Map shard_id -> list of events
+    events_by_shard = {}
+    for shard in shard_data['shards']:
+        events_by_shard[shard.id] = shard.events
+
     return {
         "dataset_path": dataset_path,
         "glossary_path": glossary_path,
-        "shard_data": shard_data
+        "shard_data": shard_data,
+        "events_by_year": events_by_shard  # For embedding generation (maps shard_id -> events)
     }
 
 

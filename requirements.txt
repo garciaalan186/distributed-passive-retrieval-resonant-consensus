@@ -7,6 +7,7 @@ redis==5.0.1
 chromadb==0.4.22
 pydantic==2.5.3
 numpy==1.26.3
+tiktoken==0.5.2  # Token counting for tempo-normalized sharding
 
 # ML/Embeddings - GPU-enabled PyTorch for SLM inference acceleration
 # Note: CPU-only torch is ~200MB, GPU-enabled is ~2GB but provides 10-100x speedup

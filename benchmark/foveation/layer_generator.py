@@ -315,10 +315,15 @@ class LayerGenerator:
         """Extract key claims from events."""
         claims = []
         for event in events:
-            if 'claims' in event:
-                for claim in event['claims']:
-                    if claim.get('claim_type') == 'consensus':
-                        claims.append(claim.get('claim_text', ''))
+            # Claims are stored as IDs (strings) in events
+            if 'claims' in event and event['claims']:
+                # For now, use event content as proxy for claims
+                # TODO: Load actual claim objects if needed
+                content_snippet = event.get('content', '')[:200]
+                if content_snippet and content_snippet not in claims:
+                    claims.append(content_snippet)
+                if len(claims) >= 10:
+                    break
 
         return claims[:10]  # Top 10 claims
 
