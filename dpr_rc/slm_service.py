@@ -35,10 +35,12 @@ _tokenizer = None
 
 
 class VerifyRequest(BaseModel):
-    """Request for content verification"""
+    """Request for content verification with optional hierarchical context"""
     query: str
     retrieved_content: str
     trace_id: Optional[str] = None
+    shard_summary: Optional[str] = None  # L1 foveated context
+    epoch_summary: Optional[str] = None  # L2 foveated context
 
 
 class VerifyResponse(BaseModel):
@@ -118,23 +120,37 @@ Respond in this exact JSON format:
 Your response (JSON only):"""
 
 
-def get_verification_prompt(query: str, content: str) -> str:
+def get_verification_prompt(query: str, content: str, shard_summary: str = None, epoch_summary: str = None) -> str:
     """
-    Construct the verification prompt for the SLM.
+    Construct the verification prompt for the SLM with hierarchical foveated context.
 
     The prompt asks the model to judge whether the retrieved content
     answers or supports the original query.
+
+    Optional hierarchical context:
+    - shard_summary (L1): Summary of the time shard containing this content
+    - epoch_summary (L2): Summary of the broader epoch period
     """
+    # Build hierarchical context section if available
+    context_section = ""
+    if shard_summary or epoch_summary:
+        context_section = "\nHierarchical Context:\n"
+        if epoch_summary:
+            context_section += f"Epoch Summary (L2): {epoch_summary}\n"
+        if shard_summary:
+            context_section += f"Shard Summary (L1): {shard_summary}\n"
+
     return f"""You are a verification assistant. Your task is to judge whether the retrieved content answers or supports the given query.
 
 Query: {query}
-
+{context_section}
 Retrieved Content: {content}
 
 Instructions:
 1. Analyze if the content directly answers or provides relevant information for the query
-2. Provide a confidence score from 0.0 to 1.0
-3. Explain your reasoning briefly
+2. Use hierarchical context to better understand the temporal and topical setting
+3. Provide a confidence score from 0.0 to 1.0
+4. Explain your reasoning briefly
 
 Respond in this exact JSON format:
 {{"confidence": <0.0-1.0>, "supports_query": <true/false>, "reasoning": "<brief explanation>"}}
@@ -332,13 +348,15 @@ def parse_model_response(response_text: str) -> dict:
     }
 
 
-def verify_content(query: str, content: str) -> dict:
+def verify_content(query: str, content: str, shard_summary: str = None, epoch_summary: str = None) -> dict:
     """
-    Run verification inference using the SLM.
+    Run verification inference using the SLM with optional hierarchical context.
 
     Args:
         query: The original query from A*
         content: The retrieved content to verify
+        shard_summary: Optional L1 foveated summary (shard-level context)
+        epoch_summary: Optional L2 foveated summary (epoch-level context)
 
     Returns:
         dict with confidence, supports_query, reasoning, inference_time_ms
@@ -350,8 +368,8 @@ def verify_content(query: str, content: str) -> dict:
 
     start_time = time.time()
 
-    # Construct prompt
-    prompt = get_verification_prompt(query, content[:1000])  # Limit content length
+    # Construct prompt with optional hierarchical context
+    prompt = get_verification_prompt(query, content[:1000], shard_summary, epoch_summary)
 
     # Tokenize
     inputs = _tokenizer(
@@ -488,9 +506,16 @@ def verify(request: VerifyRequest):
 
     This is the main endpoint called by Passive Agents during
     L2 verification in the consensus protocol.
+
+    Supports optional hierarchical foveated context (L1/L2 summaries).
     """
     try:
-        result = verify_content(request.query, request.retrieved_content)
+        result = verify_content(
+            request.query,
+            request.retrieved_content,
+            request.shard_summary,
+            request.epoch_summary
+        )
 
         return VerifyResponse(
             confidence=result["confidence"],
@@ -509,11 +534,17 @@ def batch_verify(requests: list[VerifyRequest]):
     Batch verification for multiple content pieces.
 
     More efficient when verifying multiple retrievals at once.
+    Supports optional hierarchical foveated context (L1/L2 summaries).
     """
     results = []
     for req in requests:
         try:
-            result = verify_content(req.query, req.retrieved_content)
+            result = verify_content(
+                req.query,
+                req.retrieved_content,
+                req.shard_summary,
+                req.epoch_summary
+            )
             results.append({
                 "trace_id": req.trace_id,
                 "confidence": result["confidence"],

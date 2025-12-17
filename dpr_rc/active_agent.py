@@ -79,19 +79,129 @@ app = FastAPI(title="DPR-ActiveController", lifespan=lifespan)
 
 
 class RouteLogic:
-    """L1 Time-Sharded Routing Logic per DPR Architecture Spec Section 3.1.1"""
+    """
+    L1 Time-Sharded Routing Logic per DPR Architecture Spec Section 3.1.1
 
-    @staticmethod
-    def get_target_shards(query: QueryRequest) -> List[str]:
+    Enhanced with tempo-normalized sharding and causal awareness.
+    """
+
+    _manifest = None
+    _causal_index = None
+    _manifest_loaded = False
+
+    @classmethod
+    def _load_indices(cls):
+        """Load shard manifest and causal index from GCS (lazy loading)."""
+        if cls._manifest_loaded:
+            return
+
+        try:
+            from google.cloud import storage
+            import json
+            import tempfile
+
+            bucket_name = os.environ.get('HISTORY_BUCKET', '')
+            scale = os.environ.get('HISTORY_SCALE', 'medium')
+
+            if not bucket_name:
+                logger.logger.warning("HISTORY_BUCKET not set, using legacy year-based routing")
+                cls._manifest_loaded = True
+                return
+
+            client = storage.Client()
+            bucket = client.bucket(bucket_name)
+
+            # Load shard manifest
+            manifest_blob = bucket.blob(f"indices/{scale}/shard_manifest.json")
+            if manifest_blob.exists():
+                with tempfile.NamedTemporaryFile(mode='w+', suffix='.json', delete=False) as f:
+                    manifest_blob.download_to_filename(f.name)
+                    f.seek(0)
+                    manifest_data = json.load(open(f.name))
+                    cls._manifest = manifest_data
+                    logger.logger.info(f"Loaded shard manifest: {len(manifest_data.get('shards', []))} shards")
+
+            # Load causal index
+            causal_blob = bucket.blob(f"indices/{scale}/causal_index.json")
+            if causal_blob.exists():
+                with tempfile.NamedTemporaryFile(mode='w+', suffix='.json', delete=False) as f:
+                    causal_blob.download_to_filename(f.name)
+                    f.seek(0)
+                    causal_data = json.load(open(f.name))
+                    cls._causal_index = causal_data
+                    logger.logger.info(f"Loaded causal index")
+
+            cls._manifest_loaded = True
+
+        except Exception as e:
+            logger.logger.error(f"Failed to load indices: {e}, falling back to legacy routing")
+            cls._manifest_loaded = True
+
+    @classmethod
+    def get_target_shards(cls, query: QueryRequest) -> List[str]:
         """
         Determine target shards based on timestamp context.
+
+        Enhanced routing:
+        1. Query manifest to find primary shard(s) for timestamp
+        2. Expand to include causal ancestor shards (up to depth 2)
+        3. Fallback to legacy year-based routing if indices unavailable
+
         Per spec: "The Central Index is partitioned into Time-Based Shards"
         """
-        if query.timestamp_context:
-            # Deterministic sharding logic based on year
-            year = query.timestamp_context[:4]
-            return [f"shard_{year}"]
-        return ["broadcast"]
+        cls._load_indices()
+
+        if not query.timestamp_context:
+            return ["broadcast"]
+
+        # Use tempo-normalized routing if manifest available
+        if cls._manifest and 'shards' in cls._manifest:
+            return cls._get_tempo_normalized_shards(query.timestamp_context)
+
+        # Fallback to legacy year-based routing
+        year = query.timestamp_context[:4]
+        return [f"shard_{year}"]
+
+    @classmethod
+    def _get_tempo_normalized_shards(cls, timestamp: str) -> List[str]:
+        """
+        Get tempo-normalized shards for timestamp with causal expansion.
+
+        Args:
+            timestamp: ISO timestamp
+
+        Returns:
+            List of shard IDs (primary + causal ancestors)
+        """
+        primary_shards = []
+
+        # Find shards containing this timestamp
+        for shard in cls._manifest.get('shards', []):
+            time_range = shard.get('time_range', {})
+            start = time_range.get('start', '')
+            end = time_range.get('end', '')
+
+            if start <= timestamp <= end:
+                primary_shards.append(shard.get('id', ''))
+
+        if not primary_shards:
+            # No shard found for timestamp, fallback to closest
+            logger.logger.warning(f"No shard found for timestamp {timestamp}, using broadcast")
+            return ["broadcast"]
+
+        # Expand to include causal ancestors (if causal index available)
+        if cls._causal_index and 'shard_ancestry' in cls._causal_index:
+            expanded_shards = set(primary_shards)
+
+            for shard_id in primary_shards:
+                ancestry = cls._causal_index['shard_ancestry'].get(shard_id, {})
+                # Include direct ancestors (depth 1)
+                direct_ancestors = ancestry.get('direct_ancestors', [])
+                expanded_shards.update(direct_ancestors[:3])  # Limit to top 3 ancestors
+
+            return sorted(list(expanded_shards))
+
+        return primary_shards
 
 
 # Per spec Section 2.1: "Passive Agent (P) - A serverless worker representing

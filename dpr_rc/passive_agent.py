@@ -123,6 +123,9 @@ class PassiveWorker:
         self._loading_locks: Dict[str, threading.Lock] = {}
         self._global_lock = threading.Lock()
 
+        # Track loaded foveated summaries (shard_id -> {L1: str, L2: str})
+        self._foveated_context: Dict[str, Dict[str, str]] = {}
+
         # GCS embedding store (lazy initialized)
         self._gcs_store: Optional[GCSEmbeddingStore] = None
         self._cache_dir = tempfile.mkdtemp(prefix="dpr_worker_")
@@ -143,6 +146,58 @@ class PassiveWorker:
             except Exception as e:
                 logger.logger.warning(f"Could not initialize GCS store: {e}")
         return self._gcs_store
+
+    def _load_foveated_summaries(self, shard_id: str) -> Dict[str, str]:
+        """
+        Load foveated summaries (L1, L2) for a shard from GCS.
+
+        Structure:
+        - L1: Per-shard summary (foveated/{scale}/L1/{shard_id}.json)
+        - L2: Epoch-level summary (foveated/{scale}/L2/epoch_{epoch_id}.json)
+
+        Returns:
+            Dict with 'L1' and 'L2' keys containing summary text
+        """
+        # Check cache first
+        if shard_id in self._foveated_context:
+            return self._foveated_context[shard_id]
+
+        summaries = {"L1": "", "L2": ""}
+
+        if not HISTORY_BUCKET:
+            return summaries
+
+        try:
+            from google.cloud import storage
+            client = storage.Client()
+            bucket = client.bucket(HISTORY_BUCKET)
+
+            # Load L1 summary (shard-specific)
+            l1_blob_path = f"foveated/{HISTORY_SCALE}/L1/{shard_id}.json"
+            l1_blob = bucket.blob(l1_blob_path)
+
+            if l1_blob.exists():
+                l1_data = json.loads(l1_blob.download_as_text())
+                summaries["L1"] = l1_data.get("summary", "")
+                logger.logger.debug(f"Loaded L1 summary for {shard_id}: {len(summaries['L1'])} chars")
+
+            # Load L2 summary (epoch-level)
+            # Extract epoch ID from shard metadata if available
+            # For tempo-normalized shards, epoch is derived from shard manifest
+            # Fallback: use year from shard_id if legacy format
+
+            # Try to get epoch from manifest (if available)
+            # For now, skip L2 if we can't determine epoch reliably
+            # TODO: Load epoch mapping from shard manifest
+
+            logger.logger.debug(f"Foveated context loaded for {shard_id}: L1={len(summaries['L1'])} chars")
+
+        except Exception as e:
+            logger.logger.warning(f"Failed to load foveated summaries for {shard_id}: {e}")
+
+        # Cache the result
+        self._foveated_context[shard_id] = summaries
+        return summaries
 
     def _get_loading_lock(self, shard_id: str) -> threading.Lock:
         """Get or create a lock for loading a specific shard."""
@@ -232,6 +287,10 @@ class PassiveWorker:
 
             if loaded:
                 self._loaded_shards[shard_id] = collection
+
+                # Load foveated summaries for this shard
+                self._load_foveated_summaries(shard_id)
+
                 logger.logger.info(
                     f"Shard {shard_id} loaded: {collection.count()} documents"
                 )
@@ -590,16 +649,24 @@ class PassiveWorker:
             debug_log(f"PassiveWorker[{WORKER_ID}]", f"Retrieval error: {e}")
             return None
 
-    def verify_l2(self, content: str, query: str, depth: int = 0) -> float:
+    def verify_l2(self, content: str, query: str, depth: int = 0, shard_id: str = None) -> float:
         """
-        L2 Verification using SLM reasoning.
+        L2 Verification using SLM reasoning with hierarchical foveated context.
 
         Per Mathematical Model Section 5.2, Equation 9:
         C(r_p) = V(q, context_p) · (1 / (1 + i))
 
         This calls the SLM service to get a reasoned verification judgment,
         rather than using simple token overlap.
+
+        Enhanced with foveated context: L1 (shard summary) and L2 (epoch summary)
+        provide hierarchical context for better verification.
         """
+        # Load foveated context if shard_id provided
+        foveated_context = {}
+        if shard_id:
+            foveated_context = self._foveated_context.get(shard_id, {})
+
         # Retry with exponential backoff (3 attempts: 0s, 2s, 4s delays)
         max_retries = 3
         for attempt in range(max_retries):
@@ -609,13 +676,22 @@ class PassiveWorker:
                     logger.logger.debug(f"Retrying SLM verify (attempt {attempt + 1}/{max_retries}) after {delay}s delay")
                     time.sleep(delay)
 
+                # Build verification request with optional foveated context
+                verify_request = {
+                    "query": query,
+                    "retrieved_content": content[:2000],  # Limit content size
+                    "trace_id": f"{WORKER_ID}_{time.time()}"
+                }
+
+                # Add hierarchical context if available
+                if foveated_context.get("L1"):
+                    verify_request["shard_summary"] = foveated_context["L1"][:500]  # L1 context
+                if foveated_context.get("L2"):
+                    verify_request["epoch_summary"] = foveated_context["L2"][:500]  # L2 context
+
                 response = requests.post(
                     f"{SLM_SERVICE_URL}/verify",
-                    json={
-                        "query": query,
-                        "retrieved_content": content[:2000],  # Limit content size
-                        "trace_id": f"{WORKER_ID}_{time.time()}"
-                    },
+                    json=verify_request,
                     timeout=SLM_VERIFY_TIMEOUT
                 )
 
@@ -770,8 +846,9 @@ class PassiveWorker:
                 continue
 
             # L2 Verification using ORIGINAL query (SLM judges against user's intent)
+            # Include shard_id for foveated context enhancement
             depth = doc.get('metadata', {}).get('hierarchy_depth', 0)
-            confidence = self.verify_l2(doc['content'], original_query, depth)
+            confidence = self.verify_l2(doc['content'], original_query, depth, shard_id)
 
             if confidence < 0.3:
                 logger.logger.debug(f"Confidence {confidence:.2f} below threshold")
