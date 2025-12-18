@@ -23,6 +23,9 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import torch
 
+from .logging_utils import StructuredLogger
+from .models import ComponentType
+
 # Configuration
 SLM_MODEL = os.getenv("SLM_MODEL", "Qwen/Qwen2-0.5B-Instruct")
 SLM_PORT = int(os.getenv("PORT", os.getenv("SLM_PORT", "8080")))  # Cloud Run uses PORT env var
@@ -32,6 +35,9 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # Global model and tokenizer
 _model = None
 _tokenizer = None
+
+# Initialize structured logger
+logger = StructuredLogger(ComponentType.ACTIVE_CONTROLLER)  # Using ACTIVE_CONTROLLER as generic for now
 
 
 class VerifyRequest(BaseModel):
@@ -263,6 +269,8 @@ def load_model():
         _model.eval()
 
         load_time = time.time() - start_time
+        logger.logger.info(f"Model {SLM_MODEL} loaded in {load_time:.2f}s on {DEVICE}")
+        logger.logger.info(f"Model memory: {_model.get_memory_footprint() / 1e9:.2f} GB")
         print(f"Model loaded in {load_time:.2f}s")
         print(f"Model memory: {_model.get_memory_footprint() / 1e9:.2f} GB")
 
@@ -509,6 +517,15 @@ def verify(request: VerifyRequest):
 
     Supports optional hierarchical foveated context (L1/L2 summaries).
     """
+    # Log verification request
+    logger.log_message(
+        trace_id=request.trace_id or "unknown",
+        direction="request",
+        message_type="slm_verify_request",
+        payload=request.model_dump(),
+        metadata={"endpoint": "/verify", "model": SLM_MODEL}
+    )
+
     try:
         result = verify_content(
             request.query,
@@ -517,14 +534,26 @@ def verify(request: VerifyRequest):
             request.epoch_summary
         )
 
-        return VerifyResponse(
+        response = VerifyResponse(
             confidence=result["confidence"],
             reasoning=result["reasoning"],
             supports_query=result["supports_query"],
             model_id=result["model_id"],
             inference_time_ms=result["inference_time_ms"]
         )
+
+        # Log verification response
+        logger.log_message(
+            trace_id=request.trace_id or "unknown",
+            direction="response",
+            message_type="slm_verify_response",
+            payload=response.model_dump(),
+            metadata={"inference_time_ms": response.inference_time_ms}
+        )
+
+        return response
     except Exception as e:
+        logger.logger.error(f"Verification error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -673,17 +702,38 @@ def enhance_query_endpoint(request: EnhanceQueryRequest):
     - Clarifies ambiguous terms
     - Incorporates temporal context if provided
     """
+    # Log enhance query request
+    logger.log_message(
+        trace_id=request.trace_id or "unknown",
+        direction="request",
+        message_type="slm_enhance_query_request",
+        payload=request.model_dump(),
+        metadata={"endpoint": "/enhance_query", "model": SLM_MODEL}
+    )
+
     try:
         result = enhance_query(request.query, request.timestamp_context)
 
-        return EnhanceQueryResponse(
+        response = EnhanceQueryResponse(
             original_query=result["original_query"],
             enhanced_query=result["enhanced_query"],
             expansions=result["expansions"],
             model_id=result["model_id"],
             inference_time_ms=result["inference_time_ms"]
         )
+
+        # Log enhance query response
+        logger.log_message(
+            trace_id=request.trace_id or "unknown",
+            direction="response",
+            message_type="slm_enhance_query_response",
+            payload=response.model_dump(),
+            metadata={"inference_time_ms": response.inference_time_ms}
+        )
+
+        return response
     except Exception as e:
+        logger.logger.error(f"Query enhancement error: {e}")
         # On error, return original query unchanged
         return EnhanceQueryResponse(
             original_query=request.query,
@@ -710,6 +760,15 @@ def check_hallucination_endpoint(request: HallucinationCheckRequest):
 
     if _model is None or _tokenizer is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
+
+    # Log hallucination check request
+    logger.log_message(
+        trace_id=request.trace_id or "unknown",
+        direction="request",
+        message_type="slm_hallucination_check_request",
+        payload=request.model_dump(),
+        metadata={"endpoint": "/check_hallucination", "model": SLM_MODEL}
+    )
 
     try:
         start_time = time.time()
@@ -754,7 +813,7 @@ def check_hallucination_endpoint(request: HallucinationCheckRequest):
         # Parse JSON from response
         result = _parse_hallucination_response(response_text)
 
-        return HallucinationCheckResponse(
+        response = HallucinationCheckResponse(
             has_hallucination=result["has_hallucination"],
             hallucination_type=result.get("hallucination_type"),
             explanation=result["explanation"],
@@ -764,8 +823,20 @@ def check_hallucination_endpoint(request: HallucinationCheckRequest):
             inference_time_ms=inference_time_ms
         )
 
+        # Log hallucination check response
+        logger.log_message(
+            trace_id=request.trace_id or "unknown",
+            direction="response",
+            message_type="slm_hallucination_check_response",
+            payload=response.model_dump(),
+            metadata={"inference_time_ms": inference_time_ms, "has_hallucination": result["has_hallucination"]}
+        )
+
+        return response
+
     except Exception as e:
         # On error, return conservative fallback
+        logger.logger.error(f"Error in hallucination check: {e}")
         print(f"Error in hallucination check: {e}")
         return HallucinationCheckResponse(
             has_hallucination=False,  # Conservative: don't flag without confidence
