@@ -1,0 +1,219 @@
+openapi: 3.0.3
+info:
+  title: DPR-RC Active Controller API
+  description: |
+    Resonant Consensus Protocol v4 Active Agent Controller
+
+    The Active Controller orchestrates the 3-layer DPR-RC pipeline:
+    - **L1 Routing**: Time-based shard selection
+    - **L2 Verification**: SLM semantic verification via workers
+    - **L3 Consensus**: Cross-cluster resonant consensus calculation
+
+    Communication modes:
+    - **HTTP mode** (Cloud Run): Direct worker HTTP calls
+    - **Redis mode** (local dev): Pub/Sub message passing
+  version: 4.0.0
+  contact:
+    name: DPR-RC Project
+    url: https://github.com/yourusername/dpr-rc
+
+servers:
+  - url: https://dpr-active-controller-jgmlwx5hia-uc.a.run.app
+    description: Production (Cloud Run)
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: query
+    description: Query processing operations
+  - name: health
+    description: Health check endpoints
+  - name: debug
+    description: Debug and testing endpoints
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      description: Returns the health status of the Active Controller
+      tags:
+        - health
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: healthy
+                  mode:
+                    type: string
+                    example: http
+                    description: Communication mode (http or redis)
+                  worker_count:
+                    type: integer
+                    example: 1
+                  slm_service_url:
+                    type: string
+                    example: https://dpr-slm-service-jgmlwx5hia-uc.a.run.app
+
+  /query:
+    post:
+      summary: Process query through DPR-RC pipeline
+      description: |
+        Main query endpoint that executes the full 3-layer pipeline:
+        1. **L1 Routing**: Query enhancement + temporal shard selection
+        2. **L2 Verification**: Workers retrieve and verify with SLM
+        3. **L3 Consensus**: Resonant consensus calculation across clusters
+
+        Returns superposition state with consensus/polar/negative_consensus tiers.
+      tags:
+        - query
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryRequest'
+      responses:
+        '200':
+          description: Query processed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetrievalResult'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+
+  /debug/sample_response:
+    get:
+      summary: Get sample response
+      description: Returns a sample RetrievalResult for testing serialization
+      tags:
+        - debug
+      responses:
+        '200':
+          description: Sample response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetrievalResult'
+
+components:
+  schemas:
+    QueryRequest:
+      type: object
+      required:
+        - query_text
+      properties:
+        query_text:
+          type: string
+          description: The user's query
+          example: What caused the great resonance shift in 2019?
+        trace_id:
+          type: string
+          format: uuid
+          description: Optional trace ID for correlation (auto-generated if not provided)
+        timestamp_context:
+          type: string
+          format: date
+          description: Optional temporal context to guide L1 routing
+          example: "2019-01-01"
+
+    RetrievalResult:
+      type: object
+      required:
+        - trace_id
+        - status
+        - sources
+      properties:
+        trace_id:
+          type: string
+          format: uuid
+          description: Trace ID for log correlation
+        final_answer:
+          type: string
+          nullable: true
+          description: |
+            A* interpretation of superposition (null if no consensus reached)
+        confidence:
+          type: number
+          format: float
+          nullable: true
+          description: Overall confidence score (0.0-1.0)
+        status:
+          type: string
+          enum: [SUCCESS, NO_CONSENSUS, ERROR]
+          description: Query execution status
+        sources:
+          type: array
+          items:
+            type: string
+          description: List of worker IDs that contributed votes
+        superposition:
+          type: object
+          description: |
+            RCP v4 superposition state with consensus tiers.
+            Always present (may be empty dict if no votes).
+          properties:
+            consensus:
+              type: array
+              description: Tier 1 - Claims with cross-cluster resonance
+              items:
+                $ref: '#/components/schemas/ArtifactSummary'
+            polar:
+              type: array
+              description: Tier 2 - Claims with cluster-specific support
+              items:
+                $ref: '#/components/schemas/ArtifactSummary'
+            negative_consensus:
+              type: array
+              description: Tier 3 - Claims with cross-cluster rejection
+              items:
+                $ref: '#/components/schemas/ArtifactSummary'
+
+    ArtifactSummary:
+      type: object
+      description: Summary of a response artifact from consensus calculation
+      properties:
+        claim:
+          type: string
+          description: Content snippet (first 500 chars)
+        approval_set:
+          type: array
+          items:
+            type: string
+          description: List of cluster IDs that approved this artifact
+        agreement_ratio:
+          type: number
+          format: float
+          description: Fraction of clusters in approval (0.0-1.0)
+        tier:
+          type: string
+          enum: [consensus, polar, negative_consensus]
+          description: Which tier this artifact belongs to
+        score:
+          type: number
+          format: float
+          description: Aggregated confidence score
+        quadrant:
+          type: array
+          items:
+            type: number
+            format: float
+          minItems: 2
+          maxItems: 2
+          description: Semantic quadrant coordinates [v+, v-]
+        vote_count:
+          type: integer
+          description: Number of votes for this artifact

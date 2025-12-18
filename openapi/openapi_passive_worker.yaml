@@ -1,0 +1,298 @@
+openapi: 3.0.3
+info:
+  title: DPR-RC Passive Worker API
+  description: |
+    Passive Agent Worker for DPR-RC System
+
+    **Lazy Loading Architecture:**
+    - Workers start with empty vector stores
+    - Shards loaded on-demand when RFI specifies target_shards
+    - Pre-computed embeddings loaded from GCS (no runtime embedding)
+    - Loaded shards cached locally for container lifetime
+
+    **Shard-Agnostic Design:**
+    - Workers can handle any shard (not tied to specific epochs)
+    - Active Controller's L1 router determines target shards
+    - Workers dynamically load requested shards from GCS
+
+    **L2 Verification:**
+    - ChromaDB retrieval using pre-computed embeddings
+    - SLM semantic verification of retrieved content
+    - RCP v4 binary voting with confidence thresholds
+  version: 4.0.0
+
+servers:
+  - url: https://dpr-passive-worker-jgmlwx5hia-uc.a.run.app
+    description: Production (Cloud Run)
+  - url: http://localhost:8081
+    description: Local development
+
+tags:
+  - name: processing
+    description: RFI processing operations
+  - name: health
+    description: Health and status endpoints
+  - name: data
+    description: Data ingestion endpoints
+
+paths:
+  /health:
+    get:
+      summary: Worker health check
+      description: Returns health status and loaded shards
+      tags:
+        - health
+      responses:
+        '200':
+          description: Worker is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: healthy
+                  worker_id:
+                    type: string
+                    example: worker-1
+                  epoch:
+                    type: string
+                    example: "2019"
+                  mode:
+                    type: string
+                    example: lazy_loading
+                  loaded_shards:
+                    type: array
+                    items:
+                      type: string
+                    example: ["shard_2019", "shard_2020"]
+                  bucket:
+                    type: string
+                    example: dpr-history-data-project-id
+                  scale:
+                    type: string
+                    example: small
+                  model:
+                    type: string
+                    example: all-MiniLM-L6-v2
+
+  /shards:
+    get:
+      summary: List loaded shards
+      description: Returns information about currently loaded shards
+      tags:
+        - health
+      responses:
+        '200':
+          description: List of loaded shards
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  worker_id:
+                    type: string
+                  loaded_shards:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ShardInfo'
+
+  /process_rfi:
+    post:
+      summary: Process Request For Information
+      description: |
+        HTTP endpoint for processing RFI requests directly.
+
+        **Workflow:**
+        1. Load target shards on-demand (if not already loaded)
+        2. Retrieve relevant documents from ChromaDB
+        3. Verify with SLM semantic verification
+        4. Calculate confidence and binary vote
+        5. Return votes synchronously
+
+        **Query Handling:**
+        - `query_text`: Enhanced query for embedding-based retrieval
+        - `original_query`: Original user query for SLM verification
+      tags:
+        - processing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RFIRequest'
+      responses:
+        '200':
+          description: RFI processed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VoteResponse'
+        '500':
+          description: Processing error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+
+  /ingest:
+    post:
+      summary: Ingest benchmark data
+      description: Direct data ingestion endpoint for benchmarking
+      tags:
+        - data
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                shard_id:
+                  type: string
+                  example: shard_2019
+                events:
+                  type: array
+                  items:
+                    type: object
+      responses:
+        '200':
+          description: Data ingested successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+
+components:
+  schemas:
+    RFIRequest:
+      type: object
+      required:
+        - trace_id
+        - query_text
+      properties:
+        trace_id:
+          type: string
+          format: uuid
+          description: Trace ID for log correlation
+        query_text:
+          type: string
+          description: Enhanced query for retrieval (from SLM)
+        original_query:
+          type: string
+          description: Original user query for verification
+        target_shards:
+          type: array
+          items:
+            type: string
+          description: List of shard IDs to query
+          example: ["shard_2019", "shard_2020"]
+        timestamp_context:
+          type: string
+          format: date
+          description: Optional temporal context
+          example: "2019-01-01"
+
+    VoteResponse:
+      type: object
+      required:
+        - worker_id
+        - votes
+        - shards_queried
+      properties:
+        worker_id:
+          type: string
+          description: ID of this worker
+          example: worker-1
+        votes:
+          type: array
+          description: List of consensus votes
+          items:
+            $ref: '#/components/schemas/ConsensusVote'
+        shards_queried:
+          type: array
+          items:
+            type: string
+          description: List of shards that were queried
+          example: ["shard_2019"]
+
+    ConsensusVote:
+      type: object
+      description: RCP v4 consensus vote from worker
+      required:
+        - trace_id
+        - worker_id
+        - cluster_id
+        - content_hash
+        - confidence_score
+        - binary_vote
+        - semantic_quadrant
+        - content_snippet
+      properties:
+        trace_id:
+          type: string
+          format: uuid
+        worker_id:
+          type: string
+          example: worker-1
+        cluster_id:
+          type: string
+          description: Adversarial cluster ID (e.g., C_RECENT, C_OLDER)
+          example: C_RECENT
+        content_hash:
+          type: string
+          description: MD5 hash of content for deduplication
+        confidence_score:
+          type: number
+          format: float
+          description: Continuous confidence score (0.0-1.0)
+          minimum: 0.0
+          maximum: 1.0
+        binary_vote:
+          type: integer
+          description: Binary vote {0, 1} based on threshold θ
+          enum: [0, 1]
+        semantic_quadrant:
+          type: array
+          items:
+            type: number
+            format: float
+          minItems: 2
+          maxItems: 2
+          description: |
+            RCP v4 semantic quadrant [v+, v-]
+            - v+: Approval rate from cluster C_j
+            - v-: Approval rate from opposing clusters
+        content_snippet:
+          type: string
+          description: First 500 characters of retrieved content
+        author_cluster:
+          type: string
+          description: Cluster ID of artifact author (same as worker's cluster)
+          example: C_RECENT
+
+    ShardInfo:
+      type: object
+      description: Information about a loaded shard
+      properties:
+        shard_id:
+          type: string
+          example: shard_2019
+        document_count:
+          type: integer
+          example: 150
+        embedding_model:
+          type: string
+          example: all-MiniLM-L6-v2
+        loaded_from:
+          type: string
+          enum: [gcs_embeddings, gcs_raw, redis_cache, fallback]
+          description: Source from which shard was loaded
