@@ -33,18 +33,23 @@ class QueryRequest(BaseModel):
 class ConsensusVote(BaseModel):
     trace_id: str
     worker_id: str
+    cluster_id: str  # RCP v4: Which adversarial cluster this worker belongs to (e.g., "C_RECENT", "C_OLDER")
     content_hash: str
-    confidence_score: float
-    semantic_quadrant: List[float] # [x, y] coordinates
+    confidence_score: float  # Continuous score for internal use
+    binary_vote: int  # RCP v4: Binary vote {0, 1} based on threshold θ
+    semantic_quadrant: List[float]  # RCP v4: [v+, v-] = approval rates from each cluster
     content_snippet: str
+    author_cluster: Optional[str] = None  # RCP v4: Cluster of the artifact author
 
 class RetrievalResult(BaseModel):
     trace_id: str
-    final_answer: str
-    confidence: float
+    final_answer: Optional[str] = None  # A* interprets superposition
+    confidence: Optional[float] = None  # A* determines confidence
     status: str
     sources: List[str]
-    superposition: Optional[Dict[str, Any]] = None
+    superposition: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+    model_config = {"exclude_none": False}
 
 
 class ShardInfo(BaseModel):
@@ -74,3 +79,15 @@ class EmbeddingInfo(BaseModel):
     shard_id: str
     created_at: str
     checksum: str
+
+
+class RCPConfig(BaseModel):
+    """Resonant Consensus Protocol v4 Configuration"""
+    theta: float = 0.5  # Cluster approval threshold (Eq. 1): fraction of agents in cluster needed to approve
+    tau: float = 0.6    # Consensus threshold (Eq. 4): fraction of clusters needed for consensus
+    vote_threshold: float = 0.5  # Confidence threshold for binary voting: confidence >= threshold → vote = 1
+
+    # Temporal cluster definitions for DPR-RC
+    # C_RECENT: shards from 2020 onwards (newer historical versions)
+    # C_OLDER: shards before 2020 (older historical versions)
+    recent_epoch_start: str = "2020-01-01"

@@ -14,7 +14,7 @@ import uuid
 
 from .models import (
     QueryRequest, LogEntry, ComponentType, EventType,
-    ConsensusVote, RetrievalResult
+    ConsensusVote, RetrievalResult, RCPConfig
 )
 from .logging_utils import StructuredLogger
 from .debug_utils import (
@@ -42,6 +42,9 @@ USE_HTTP_WORKERS = os.getenv("USE_HTTP_WORKERS", "true").lower() == "true"
 HTTP_WORKER_TIMEOUT = float(os.getenv("HTTP_WORKER_TIMEOUT", "90.0"))  # seconds (increased for cold starts + GCS loading)
 
 logger = StructuredLogger(ComponentType.ACTIVE_CONTROLLER)
+
+# RCP v4: Resonant Consensus Protocol configuration
+rcp_config = RCPConfig()
 
 # Initialize Redis client (may fail in HTTP-only mode, that's OK)
 try:
@@ -249,6 +252,23 @@ def health_check():
     }
 
 
+@app.get("/debug/sample_response", response_model=RetrievalResult)
+def debug_sample_response():
+    """Return sample RetrievalResult to verify serialization"""
+    return RetrievalResult(
+        trace_id="test-123",
+        final_answer=None,
+        confidence=0.0,
+        status="SUCCESS",
+        sources=["worker-1"],
+        superposition={
+            "consensus": [{"claim": "test", "score": 0.9}],
+            "polar": [],
+            "negative_consensus": []
+        }
+    )
+
+
 def call_workers_via_http(
     trace_id: str,
     query_text: str,
@@ -337,6 +357,139 @@ def call_workers_via_http(
 
     logger.logger.info(f"HTTP workers returned {len(all_votes)} votes from {len(worker_urls)} workers")
     return all_votes
+
+
+# ============================================================================
+# RCP v4: Resonant Consensus Protocol Implementation
+# ============================================================================
+
+def compute_cluster_approval(votes_for_artifact: List[ConsensusVote], cluster_id: str) -> bool:
+    """
+    RCP v4 Equation 1: Cluster Approval
+
+    Approve_i(ω) = 1 if (1/|Ci|) * Σ v(ω,a) >= θ_i
+                              a∈Ci
+
+    Returns True if the cluster approves the artifact (fraction of binary votes >= threshold)
+    """
+    cluster_votes = [v for v in votes_for_artifact if v.cluster_id == cluster_id]
+
+    if not cluster_votes:
+        return False
+
+    # Count binary approvals in this cluster
+    approvals = sum(v.binary_vote for v in cluster_votes)
+    approval_rate = approvals / len(cluster_votes)
+
+    return approval_rate >= rcp_config.theta
+
+
+def compute_approval_set(votes_for_artifact: List[ConsensusVote]) -> set:
+    """
+    RCP v4 Equation 2: Approval Set
+
+    S(ω) = {C_i ∈ C : Approve_i(ω) = 1}
+
+    Returns the set of cluster IDs that approve this artifact
+    """
+    # Get all unique clusters
+    all_clusters = set(v.cluster_id for v in votes_for_artifact)
+
+    # Determine which clusters approve
+    approval_set = set()
+    for cluster_id in all_clusters:
+        if compute_cluster_approval(votes_for_artifact, cluster_id):
+            approval_set.add(cluster_id)
+
+    return approval_set
+
+
+def compute_agreement_ratio(approval_set: set, total_clusters: int) -> float:
+    """
+    RCP v4 Equation 3: Agreement Ratio
+
+    ρ(ω) = |S(ω)| / n
+
+    Returns the fraction of clusters that approve the artifact
+    """
+    return len(approval_set) / total_clusters if total_clusters > 0 else 0.0
+
+
+def classify_artifact(agreement_ratio: float) -> str:
+    """
+    RCP v4 Equation 4: Tier Classification
+
+    Tier(ω) = { Consensus          if ρ(ω) >= τ
+              { Polar              if 1-τ < ρ(ω) < τ
+              { Negative_Consensus if ρ(ω) <= 1-τ
+
+    Note: Negative consensus means cross-cluster agreement that something is NOT true
+    """
+    tau = rcp_config.tau
+
+    if agreement_ratio >= tau:
+        return "CONSENSUS"
+    elif agreement_ratio > (1 - tau):
+        return "POLAR"
+    else:
+        return "NEGATIVE_CONSENSUS"
+
+
+def compute_artifact_score(votes_for_artifact: List[ConsensusVote]) -> float:
+    """
+    RCP v4 Equation 5: Artifact Score
+
+    Score(ω) = (1 / |A|-1) * Σ v(ω,a)  for a ≠ author(ω)
+                              a≠author
+
+    Returns the fraction of non-authoring agents who approved (binary votes only)
+    """
+    if not votes_for_artifact:
+        return 0.0
+
+    # Get author cluster (all votes for same artifact should have same author_cluster)
+    author_cluster = votes_for_artifact[0].author_cluster
+
+    # Count approvals from non-author agents (agents = workers in different clusters)
+    # In DPR-RC, author_cluster is the cluster that generated the artifact
+    # Non-authors are workers from ALL clusters voting on it
+    non_author_votes = [v for v in votes_for_artifact if v.cluster_id != author_cluster]
+
+    if not non_author_votes:
+        # Only the author cluster voted - score is based on author cluster votes
+        author_votes = [v for v in votes_for_artifact if v.cluster_id == author_cluster]
+        if not author_votes:
+            return 0.0
+        approvals = sum(v.binary_vote for v in author_votes)
+        return approvals / len(author_votes)
+
+    # Score based on non-author approvals
+    approvals = sum(v.binary_vote for v in non_author_votes)
+    return approvals / len(non_author_votes)
+
+
+def compute_semantic_quadrant(votes_for_artifact: List[ConsensusVote]) -> List[float]:
+    """
+    RCP v4: Semantic Quadrant for DPR-RC Temporal Clustering
+
+    Returns [v+, v-] where:
+    - v+ = approval rate from C_RECENT cluster (newer history)
+    - v- = approval rate from C_OLDER cluster (older history)
+
+    This creates a 2D space for the 2×2 quadrant view:
+    - [1.0, 1.0] = Both temporal clusters approve strongly (Consensus)
+    - [1.0, 0.0] = Only recent history (Polar+)
+    - [0.0, 1.0] = Only older history (Polar-)
+    - [0.0, 0.0] = Neither approves (Reject)
+    """
+    recent_votes = [v for v in votes_for_artifact if v.cluster_id == "C_RECENT"]
+    older_votes = [v for v in votes_for_artifact if v.cluster_id == "C_OLDER"]
+
+    # Compute approval rates (average of binary votes)
+    v_plus = (sum(v.binary_vote for v in recent_votes) / len(recent_votes)) if recent_votes else 0.0
+    v_minus = (sum(v.binary_vote for v in older_votes) / len(older_votes)) if older_votes else 0.0
+
+    return [round(v_plus, 2), round(v_minus, 2)]
 
 
 def enhance_query_via_slm(query_text: str, timestamp_context: Optional[str] = None) -> dict:
@@ -567,70 +720,94 @@ async def handle_query(request: QueryRequest):
             # DEBUG: No votes received
             debug_final_response(
                 trace_id, status="FAILED", confidence=0.0,
-                answer="No consensus reached.", sources=[]
+                answer="No votes received", sources=[]
             )
+            # Return empty superposition when no votes
             return RetrievalResult(
                 trace_id=trace_id,
-                final_answer="No consensus reached.",
-                confidence=0.0,
+                final_answer=None,
+                confidence=None,
                 status="FAILED",
-                sources=[]
+                sources=[],
+                superposition={
+                    "consensus": [],
+                    "polar": [],
+                    "negative_consensus": []
+                }
             )
 
-        # 5. Resonant Consensus Protocol (L3) - Per Spec Section 4.4
-        # "Instead of returning the single best answer, the system enters a Consensus Phase"
+        # 5. Resonant Consensus Protocol v4 (L3) - Cross-Cluster Agreement Classification
+        # RCP v4: Classify artifacts based on which adversarial clusters approve
 
-        # Group votes by content hash (same content = same claim)
+        # Group votes by content hash (same content = same artifact)
         unique_candidates: Dict[str, Dict] = {}
         for v in votes:
             if v.content_hash not in unique_candidates:
                 unique_candidates[v.content_hash] = {
                     "content": v.content_snippet,
-                    "votes": []
+                    "votes": [],
+                    "approval_set": set(),
+                    "agreement_ratio": 0.0,
+                    "tier": "REJECT",
+                    "score": 0.0,
+                    "semantic_quadrant": [0.0, 0.0]
                 }
             unique_candidates[v.content_hash]["votes"].append(v)
 
-        # Classify into Semantic Quadrants per Mathematical Model Section 6.2
-        # Symmetric Resonance (Consensus): v+ > 0 ∧ v- > 0 - high agreement
-        # Asymmetry (Perspective): partial truth valid from specific perspectives
+        # Determine total number of clusters (for DPR-RC: 2 temporal clusters)
+        all_clusters = set(v.cluster_id for v in votes)
+        num_clusters = len(all_clusters)
+
+        # RCP v4: Process each artifact using Equations 1-5
         consensus_set = []
-        perspectival_set = []
+        polar_set = []
+        negative_consensus_set = []
 
         for chash, data in unique_candidates.items():
-            scores = [v.confidence_score for v in data["votes"]]
-            vote_count = len(scores)
+            artifact_votes = data["votes"]
 
-            if not scores:
-                continue
+            # RCP v4 Eq. 2: Compute approval set S(ω)
+            approval_set = compute_approval_set(artifact_votes)
+            data["approval_set"] = approval_set
 
-            mean_score = sum(scores) / len(scores)
-            variance = sum((x - mean_score) ** 2 for x in scores) / len(scores)
-            std_score = math.sqrt(variance)
+            # RCP v4 Eq. 3: Compute agreement ratio ρ(ω)
+            agreement_ratio = compute_agreement_ratio(approval_set, num_clusters)
+            data["agreement_ratio"] = agreement_ratio
 
-            # Quadrant Classification per spec
-            # High mean + low std = strong consensus (Symmetric Resonance)
-            # Per Mathematical Model: "High-entropy bridge concepts agreed upon by diverse contexts"
-            if mean_score > 0.7 and std_score < 0.2:
-                quadrant = "SYMMETRIC_RESONANCE"
-                consensus_set.append(data["content"])
-            elif mean_score > 0.4:
-                quadrant = "ASYMMETRIC"
-                perspectival_set.append({
-                    "claim": data["content"],
-                    "snapshot_views": {v.worker_id: v.confidence_score for v in data["votes"]},
-                    "quadrant": quadrant,
-                    "metrics": {"mean": mean_score, "std": std_score, "vote_count": vote_count}
-                })
-            else:
-                quadrant = "DISSONANT_POLARIZATION"
-                # Include significantly dissonant claims as perspectives if they have some support
-                if mean_score > 0.3:
-                    perspectival_set.append({
-                        "claim": data["content"],
-                        "snapshot_views": {v.worker_id: v.confidence_score for v in data["votes"]},
-                        "quadrant": quadrant,
-                        "metrics": {"mean": mean_score, "std": std_score, "vote_count": vote_count}
-                    })
+            # RCP v4 Eq. 4: Classify into tiers
+            tier = classify_artifact(agreement_ratio)
+            data["tier"] = tier
+
+            # RCP v4 Eq. 5: Compute score (for ranking within tiers)
+            score = compute_artifact_score(artifact_votes)
+            data["score"] = score
+
+            # RCP v4: Compute semantic quadrant [v+, v-]
+            quadrant = compute_semantic_quadrant(artifact_votes)
+            data["semantic_quadrant"] = quadrant
+
+            # Categorize by tier
+            artifact_summary = {
+                "claim": data["content"],
+                "approval_set": list(approval_set),
+                "agreement_ratio": agreement_ratio,
+                "tier": tier,
+                "score": score,
+                "quadrant": quadrant,
+                "vote_count": len(artifact_votes)
+            }
+
+            if tier == "CONSENSUS":
+                consensus_set.append(artifact_summary)
+            elif tier == "POLAR":
+                polar_set.append(artifact_summary)
+            else:  # NEGATIVE_CONSENSUS
+                negative_consensus_set.append(artifact_summary)
+
+        # Sort each set by score (descending)
+        consensus_set.sort(key=lambda x: x["score"], reverse=True)
+        polar_set.sort(key=lambda x: x["score"], reverse=True)
+        negative_consensus_set.sort(key=lambda x: x["score"], reverse=True)
 
         # DEBUG: Consensus calculation results
         debug_consensus_calculation(
@@ -638,56 +815,46 @@ async def handle_query(request: QueryRequest):
             votes_count=len(votes),
             unique_candidates=len(unique_candidates),
             consensus_set=consensus_set,
-            perspectival_set=perspectival_set
+            perspectival_set=polar_set  # Polar set for backward compatibility with debug
         )
 
-        # 6. Superposition Injection - Per Spec Section 4.5
-        # "A* injects a Superposition Object into its context, containing both
-        # the Consensus Truth and distinct Perspectives"
+        # 6. RCP v4 Superposition Object - Structured summary for orchestrator
+        # Per RCP v4 Section 7: artifacts grouped by tier and sorted by score
         superposition_object = {
-            "consensus_facts": consensus_set,
-            "perspectival_claims": perspectival_set
+            "consensus": consensus_set,
+            "polar": polar_set,
+            "negative_consensus": negative_consensus_set
         }
 
-        # Generate Response (A*) - Construct answer from superposition
-        if consensus_set:
-            final_answer = " ".join(consensus_set)
-            if perspectival_set:
-                final_answer += "\n\nAdditionally, there are evolving perspectives: " + \
-                               "; ".join([p['claim'] for p in perspectival_set])
-            confidence = 0.95
-        elif perspectival_set:
-            # Uncertainty case: Present options per spec
-            # "allows A* to generate a nuanced reply acknowledging both the agreed facts
-            # and the conflicting perspectives"
-            options = [f"- {p['claim']} (Agreement: {p['metrics']['mean']:.2f})"
-                      for p in perspectival_set]
-            final_answer = "The historical record shows varying perspectives:\n" + "\n".join(options)
-            confidence = 0.7
-        else:
-            final_answer = "No relevant information found in the historical record."
-            confidence = 0.0
+        # 7. Return Raw Semantic Quadrant to A* (Orchestrator)
+        # A* interprets the superposition object without pre-generated answers
+        # to avoid autonoesis (speaking to previous versions of itself)
+        #
+        # Status is only FAILED if superposition is completely empty
+        has_artifacts = bool(consensus_set or polar_set or negative_consensus_set)
+        status = "SUCCESS" if has_artifacts else "FAILED"
 
         logger.log_event(trace_id, EventType.CONSENSUS_REACHED, {
             "superposition": superposition_object,
-            "final_answer": final_answer[:200],
             "num_votes": len(votes),
             "num_consensus": len(consensus_set),
-            "num_perspectival": len(perspectival_set)
+            "num_polar": len(polar_set),
+            "num_negative_consensus": len(negative_consensus_set),
+            "status": status
         })
 
-        # DEBUG: Final response
-        status = "SUCCESS" if confidence > 0 else "NO_DATA"
+        # DEBUG: Log superposition summary
         debug_final_response(
-            trace_id, status=status, confidence=confidence,
-            answer=final_answer, sources=[v.worker_id for v in votes]
+            trace_id, status=status, confidence=0.0,
+            answer=f"Consensus: {len(consensus_set)}, Polar: {len(polar_set)}, Negative: {len(negative_consensus_set)}",
+            sources=[v.worker_id for v in votes]
         )
 
         return RetrievalResult(
             trace_id=trace_id,
-            final_answer=final_answer,
-            confidence=confidence,
-            status="SUCCESS",
+            final_answer=None,  # A* interprets superposition
+            confidence=0.0,     # A* determines confidence
+            status=status,
             sources=[v.worker_id for v in votes],
             superposition=superposition_object
         )
