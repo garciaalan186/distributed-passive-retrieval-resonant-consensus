@@ -39,7 +39,7 @@ import chromadb
 import numpy as np
 
 from .models import (
-    ComponentType, EventType, LogEntry, ConsensusVote
+    ComponentType, EventType, LogEntry, ConsensusVote, RCPConfig
 )
 from .logging_utils import StructuredLogger
 from .embedding_utils import (
@@ -115,6 +115,13 @@ class PassiveWorker:
             epoch_year=self.epoch_year
         )
 
+        # RCP v4: Configuration
+        self.rcp_config = RCPConfig()
+
+        # RCP v4: Determine cluster assignment based on temporal epoch
+        # For DPR-RC, clusters represent temporal perspectives (newer vs older history)
+        self.cluster_id = self._determine_cluster_id()
+
         # Initialize ChromaDB client (no collections yet - lazy loaded)
         self.chroma = chromadb.Client()
 
@@ -132,8 +139,34 @@ class PassiveWorker:
 
         logger.logger.info(
             f"PassiveWorker initialized (lazy loading mode). "
-            f"Bucket: {HISTORY_BUCKET}, Scale: {HISTORY_SCALE}, Model: {EMBEDDING_MODEL}"
+            f"Bucket: {HISTORY_BUCKET}, Scale: {HISTORY_SCALE}, Model: {EMBEDDING_MODEL}, "
+            f"Cluster: {self.cluster_id}"
         )
+
+    def _determine_cluster_id(self) -> str:
+        """
+        RCP v4: Determine which adversarial cluster this worker belongs to.
+
+        For DPR-RC temporal sharding:
+        - C_RECENT: Shards from 2020 onwards (newer historical versions)
+        - C_OLDER: Shards before 2020 (older historical versions)
+
+        This enables temporal consensus detection: artifacts approved by both
+        clusters are verified across time periods (strong consensus).
+        """
+        if self.epoch_year >= 2020:
+            return "C_RECENT"
+        else:
+            return "C_OLDER"
+
+    def _compute_binary_vote(self, confidence: float) -> int:
+        """
+        RCP v4 Equation 1: Convert continuous confidence to binary vote.
+
+        v(ω, a) ∈ {0, 1}
+        v(ω, a) = 1 if confidence >= threshold, else 0
+        """
+        return 1 if confidence >= self.rcp_config.vote_threshold else 0
 
     def _get_gcs_store(self) -> Optional[GCSEmbeddingStore]:
         """Lazy-initialize GCS store."""
@@ -618,6 +651,19 @@ class PassiveWorker:
             # Embed query using the SAME model as documents (fixes embedding mismatch)
             query_embedding = embed_query(query_text, EMBEDDING_MODEL)
 
+            # Log ChromaDB query
+            logger.log_message(
+                trace_id="internal",  # No trace_id available at this level
+                direction="internal",
+                message_type="chromadb_query",
+                payload={
+                    "query_text": query_text[:500],
+                    "shard_id": shard_id,
+                    "n_results": 3
+                },
+                metadata={"worker_id": WORKER_ID, "embedding_model": EMBEDDING_MODEL}
+            )
+
             # Query using pre-computed embedding vector
             results = collection.query(
                 query_embeddings=[query_embedding.tolist()],
@@ -635,6 +681,27 @@ class PassiveWorker:
                 "metadata": results['metadatas'][0][0] if results['metadatas'] else {},
                 "distance": results['distances'][0][0] if results.get('distances') else 0.0
             }
+
+            # Log ChromaDB results
+            docs = results['documents'][0] if results['documents'] else []
+            distances = results['distances'][0] if results.get('distances') else []
+            metadatas = results['metadatas'][0] if results.get('metadatas') else []
+            logger.log_message(
+                trace_id="internal",
+                direction="internal",
+                message_type="chromadb_results",
+                payload={
+                    "shard_id": shard_id,
+                    "results": [
+                        {
+                            "content": doc[:500],
+                            "distance": dist,
+                            "metadata": meta
+                        } for doc, dist, meta in zip(docs, distances, metadatas)
+                    ]
+                },
+                metadata={"worker_id": WORKER_ID, "result_count": len(docs)}
+            )
 
             # DEBUG: Retrieval successful
             debug_retrieval(
@@ -689,6 +756,15 @@ class PassiveWorker:
                 if foveated_context.get("L2"):
                     verify_request["epoch_summary"] = foveated_context["L2"][:500]  # L2 context
 
+                # Log SLM verification request
+                logger.log_message(
+                    trace_id=verify_request["trace_id"],
+                    direction="request",
+                    message_type="slm_verify",
+                    payload=verify_request,
+                    metadata={"slm_url": SLM_SERVICE_URL, "worker_id": WORKER_ID, "attempt": attempt + 1}
+                )
+
                 response = requests.post(
                     f"{SLM_SERVICE_URL}/verify",
                     json=verify_request,
@@ -702,6 +778,15 @@ class PassiveWorker:
                     # Apply depth penalty per spec equation
                     depth_penalty = 1.0 / (1.0 + depth)
                     confidence = base_score * depth_penalty
+
+                    # Log SLM verification response
+                    logger.log_message(
+                        trace_id=verify_request["trace_id"],
+                        direction="response",
+                        message_type="slm_verify",
+                        payload=result,
+                        metadata={"confidence": confidence, "base_score": base_score, "worker_id": WORKER_ID, "attempt": attempt + 1}
+                    )
 
                     logger.logger.debug(
                         f"SLM verification: confidence={base_score:.2f}, "
@@ -858,24 +943,40 @@ class PassiveWorker:
                 )
                 continue
 
-            # L3 Semantic quadrant
-            quadrant = self.calculate_quadrant(doc['content'], confidence)
+            # RCP v4: Compute binary vote from confidence
+            binary_vote = self._compute_binary_vote(confidence)
             content_hash = logger.hash_payload(doc['content'])
+
+            # RCP v4: Semantic quadrant will be computed by active agent as [v+, v-]
+            # For now, use placeholder - active agent will recalculate based on all votes
+            quadrant = [0.0, 0.0]
 
             # DEBUG: Quadrant calculation
             debug_quadrant_calculation(WORKER_ID, content_hash, confidence, quadrant)
 
-            # Cast vote
+            # RCP v4: Cast vote with cluster information
             vote = ConsensusVote(
                 trace_id=trace_id,
                 worker_id=WORKER_ID,
+                cluster_id=self.cluster_id,
                 content_hash=content_hash,
                 confidence_score=confidence,
+                binary_vote=binary_vote,
                 semantic_quadrant=quadrant,
-                content_snippet=doc['content'][:500]
+                content_snippet=doc['content'][:500],
+                author_cluster=self.cluster_id  # Worker is the author of this artifact
             )
 
             votes.append(vote)
+
+            # Log vote creation
+            logger.log_message(
+                trace_id=trace_id,
+                direction="internal",
+                message_type="vote_created",
+                payload=vote.model_dump(),
+                metadata={"worker_id": WORKER_ID, "cluster": self.cluster_id, "shard_id": shard_id}
+            )
 
             # DEBUG: Vote created
             debug_vote_created(WORKER_ID, trace_id, vote.model_dump())
@@ -987,6 +1088,15 @@ def process_rfi_http(request: RFIRequest):
         # Initialize worker if not already done
         _worker_instance = PassiveWorker()
 
+    # Log RFI receipt
+    logger.log_message(
+        trace_id=request.trace_id,
+        direction="request",
+        message_type="rfi_received",
+        payload=request.model_dump(),
+        metadata={"worker_id": WORKER_ID, "cluster": _worker_instance.cluster_id if _worker_instance else "unknown"}
+    )
+
     # Convert request to RFI data format
     rfi_data = {
         "trace_id": request.trace_id,
@@ -998,6 +1108,20 @@ def process_rfi_http(request: RFIRequest):
 
     # Process RFI and get votes
     votes = _worker_instance.process_rfi(rfi_data)
+
+    # Log vote response
+    response_data = {
+        "worker_id": WORKER_ID,
+        "votes": [v.model_dump() for v in votes],
+        "vote_count": len(votes)
+    }
+    logger.log_message(
+        trace_id=request.trace_id,
+        direction="response",
+        message_type="vote_response",
+        payload=response_data,
+        metadata={"vote_count": len(votes), "shards_queried": request.target_shards or [f"shard_{_worker_instance.epoch_year}"]}
+    )
 
     # Return votes as HTTP response
     return VoteResponse(
