@@ -248,11 +248,17 @@ class ResearchBenchmarkSuite:
                         "execution_mode": result.metadata.get("execution_mode")
                     }, query_dir / "system_output.json")
 
-                    # Fetch audit trail from Cloud Logging (only for HTTP mode)
+                    # Fetch audit trail and exchange history from Cloud Logging (only for HTTP mode)
                     if executor.execution_mode == "http":
+                        # Fetch raw audit trail (backwards compatibility)
                         audit_trail = self._fetch_audit_trail(query_id)
                         if audit_trail:
                             self._save_json(audit_trail, query_dir / "audit_trail.json")
+
+                        # Fetch structured exchange history using new download script
+                        exchange_history = self._fetch_exchange_history(query_id)
+                        if exchange_history:
+                            self._save_json(exchange_history, query_dir / "exchange_history.json")
 
                     results.append({
                         "query_id": query_id,
@@ -462,6 +468,16 @@ class ResearchBenchmarkSuite:
         Improved fallback when SLM is unavailable.
         More sophisticated than pure string matching.
         """
+        # Handle None response (raw semantic quadrant mode)
+        if response is None:
+            return {
+                "has_hallucination": False,
+                "hallucination_type": None,
+                "explanation": "No response text to evaluate (raw semantic quadrant mode)",
+                "severity": "none",
+                "flagged_content": []
+            }
+
         # Build set of valid terms from glossary
         valid_terms = set()
 
@@ -882,7 +898,7 @@ class ResearchBenchmarkSuite:
         print(f"\n✓ Research report generated: {report_path}")
     
     def _fetch_audit_trail(self, trace_id: str) -> Dict:
-        """Fetch complete audit trail from Cloud Logging"""
+        """Fetch complete audit trail from Cloud Logging (raw logs)"""
         try:
             import subprocess
             result = subprocess.run([
@@ -891,12 +907,45 @@ class ResearchBenchmarkSuite:
                 "--limit", "100",
                 "--format", "json"
             ], capture_output=True, text=True, timeout=10)
-            
+
             if result.returncode == 0:
                 return json.loads(result.stdout)
         except:
             pass
-        
+
+        return {}
+
+    def _fetch_exchange_history(self, trace_id: str) -> Dict:
+        """
+        Fetch structured exchange history using download_query_history script.
+
+        Returns complete message exchange sequence with proper chronological
+        ordering and message type categorization.
+        """
+        try:
+            import subprocess
+            import sys
+
+            # Use the download_query_history script
+            script_path = Path(__file__).parent.parent / "scripts" / "download_query_history.py"
+            if not script_path.exists():
+                print(f"Warning: Exchange history script not found at {script_path}")
+                return {}
+
+            # Run script with JSON output format
+            result = subprocess.run([
+                sys.executable, str(script_path),
+                trace_id,
+                "--format", "json"
+            ], capture_output=True, text=True, timeout=15)
+
+            if result.returncode == 0 and result.stdout:
+                return json.loads(result.stdout)
+            elif result.stderr:
+                print(f"Warning: Error fetching exchange history for {trace_id}: {result.stderr[:200]}")
+        except Exception as e:
+            print(f"Warning: Failed to fetch exchange history for {trace_id}: {e}")
+
         return {}
     
     def _save_json(self, data: Any, path: Path):
