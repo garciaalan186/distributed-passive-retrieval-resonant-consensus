@@ -318,6 +318,15 @@ def call_workers_via_http(
             # DEBUG: HTTP worker call
             debug_http_worker_call(trace_id, endpoint, request_payload)
 
+            # 4. Log worker HTTP request
+            logger.log_message(
+                trace_id=trace_id,
+                direction="request",
+                message_type="worker_rfi",
+                payload=request_payload,
+                metadata={"worker_url": endpoint, "target_shards": target_shards}
+            )
+
             response = requests.post(
                 endpoint,
                 json=request_payload,
@@ -333,6 +342,15 @@ def call_workers_via_http(
                 debug_http_worker_response(
                     trace_id, endpoint, len(votes_data),
                     {"worker_id": worker_id, "votes": votes_data, "shards": result.get("shards_queried", [])}
+                )
+
+                # 5. Log worker HTTP response
+                logger.log_message(
+                    trace_id=trace_id,
+                    direction="response",
+                    message_type="worker_votes",
+                    payload=result,
+                    metadata={"worker_url": endpoint, "vote_count": len(votes_data)}
                 )
 
                 for vote_data in votes_data:
@@ -492,7 +510,7 @@ def compute_semantic_quadrant(votes_for_artifact: List[ConsensusVote]) -> List[f
     return [round(v_plus, 2), round(v_minus, 2)]
 
 
-def enhance_query_via_slm(query_text: str, timestamp_context: Optional[str] = None) -> dict:
+def enhance_query_via_slm(query_text: str, timestamp_context: Optional[str] = None, trace_id: str = None) -> dict:
     """
     Call the SLM service to enhance the query for better retrieval.
 
@@ -505,6 +523,7 @@ def enhance_query_via_slm(query_text: str, timestamp_context: Optional[str] = No
     Args:
         query_text: Original query from user
         timestamp_context: Optional temporal context
+        trace_id: Trace ID for logging correlation
 
     Returns:
         dict with enhanced_query and expansions, or original query on failure
@@ -526,12 +545,23 @@ def enhance_query_via_slm(query_text: str, timestamp_context: Optional[str] = No
                 logger.logger.debug(f"Retrying SLM enhance_query (attempt {attempt + 1}/{max_retries}) after {delay}s delay")
                 time.sleep(delay)
 
+            # 2. Log SLM enhancement request
+            request_payload = {
+                "query": query_text,
+                "timestamp_context": timestamp_context
+            }
+            if trace_id and attempt == 0:  # Only log on first attempt
+                logger.log_message(
+                    trace_id=trace_id,
+                    direction="request",
+                    message_type="slm_enhance_query",
+                    payload=request_payload,
+                    metadata={"slm_url": SLM_SERVICE_URL, "attempt": attempt + 1}
+                )
+
             response = requests.post(
                 f"{SLM_SERVICE_URL}/enhance_query",
-                json={
-                    "query": query_text,
-                    "timestamp_context": timestamp_context
-                },
+                json=request_payload,
                 timeout=SLM_ENHANCE_TIMEOUT
             )
 
@@ -541,6 +571,16 @@ def enhance_query_via_slm(query_text: str, timestamp_context: Optional[str] = No
                     f"Query enhanced: '{query_text}' -> '{result.get('enhanced_query', query_text)}' "
                     f"(expansions: {result.get('expansions', [])}) [attempt {attempt + 1}]"
                 )
+
+                # 3. Log SLM enhancement response
+                if trace_id:
+                    logger.log_message(
+                        trace_id=trace_id,
+                        direction="response",
+                        message_type="slm_enhance_query",
+                        payload=result,
+                        metadata={"inference_time_ms": result.get("inference_time_ms", 0)}
+                    )
                 return {
                     "original_query": query_text,
                     "enhanced_query": result.get("enhanced_query", query_text),
@@ -600,13 +640,23 @@ async def handle_query(request: QueryRequest):
     # DEBUG: Query received
     debug_query_received(trace_id, request.query_text, request.timestamp_context)
 
+    # 1. Log client query receipt
+    logger.log_message(
+        trace_id=trace_id,
+        direction="request",
+        message_type="client_query",
+        payload=request.model_dump(),
+        metadata={"endpoint": "/query"}
+    )
+
     pubsub = None
     try:
         # 0. Query Enhancement via SLM (improves retrieval quality)
         # The SLM expands abbreviations, adds synonyms, and clarifies ambiguous terms
         enhancement_result = enhance_query_via_slm(
             request.query_text,
-            request.timestamp_context
+            request.timestamp_context,
+            trace_id
         )
         enhanced_query = enhancement_result["enhanced_query"]
 
@@ -850,7 +900,7 @@ async def handle_query(request: QueryRequest):
             sources=[v.worker_id for v in votes]
         )
 
-        return RetrievalResult(
+        result = RetrievalResult(
             trace_id=trace_id,
             final_answer=None,  # A* interprets superposition
             confidence=0.0,     # A* determines confidence
@@ -858,6 +908,17 @@ async def handle_query(request: QueryRequest):
             sources=[v.worker_id for v in votes],
             superposition=superposition_object
         )
+
+        # 6. Log final response to client
+        logger.log_message(
+            trace_id=trace_id,
+            direction="response",
+            message_type="client_response",
+            payload=result.model_dump(),
+            metadata={"status": status, "vote_count": len(votes)}
+        )
+
+        return result
 
     except Exception as e:
         import traceback
