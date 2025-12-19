@@ -3,8 +3,11 @@ Baseline Query Executor
 
 Executes queries against a baseline RAG system for comparison.
 
-This executor wraps the PassiveWorker (naive RAG) for use in benchmarks.
-It provides a clean IQueryExecutor interface for the baseline system.
+NOTE: After SOLID refactoring, the PassiveWorker class no longer exists as a standalone
+component. For baseline comparisons, use HTTPQueryExecutor pointing to a separate baseline
+service, or use the ChromaDBRepository directly for simple retrieval benchmarks.
+
+This executor is deprecated in its current form and will be updated in a future release.
 """
 
 import time
@@ -46,15 +49,23 @@ class BaselineExecutor(IQueryExecutor):
         self._worker = None
 
     def _ensure_worker(self):
-        """Lazy-load the PassiveWorker"""
+        """
+        Lazy-load baseline retrieval components.
+
+        NOTE: PassiveWorker class no longer exists after SOLID refactoring.
+        For baseline comparisons, use HTTPQueryExecutor with a baseline endpoint,
+        or use ChromaDBRepository directly for simple retrieval.
+
+        This method is deprecated and will raise an error.
+        """
         if self._worker is None:
-            try:
-                from dpr_rc.passive_agent import PassiveWorker
-                self._worker = PassiveWorker()
-            except ImportError as e:
-                raise RuntimeError(
-                    "PassiveWorker not available. Install dpr-rc dependencies or use HTTP mode."
-                ) from e
+            raise RuntimeError(
+                "BaselineExecutor is deprecated after SOLID refactoring. "
+                "PassiveWorker class no longer exists. "
+                "For baseline comparisons, use HTTPQueryExecutor pointing to a separate "
+                "baseline service, or implement a simple retrieval-only use case using "
+                "ChromaDBRepository directly."
+            )
 
     async def execute(
         self,
