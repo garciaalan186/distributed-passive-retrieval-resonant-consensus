@@ -15,59 +15,52 @@ GCS Data Source:
     gs://{HISTORY_BUCKET}/
     ├── raw/{scale}/shards/shard_{year}.json       # Fallback: raw text
     └── embeddings/{model}/shards/shard_{year}.npz  # Primary: pre-computed vectors
+
+REFACTORED ARCHITECTURE (SOLID):
+This file is now a THIN FACADE - it only handles:
+- FastAPI endpoint setup
+- HTTP request/response handling
+- Delegation to application layer use cases
+
+All business logic is in:
+- dpr_rc/domain/passive_agent/ - Domain entities and services
+- dpr_rc/application/passive_agent/ - Use cases and DTOs
+- dpr_rc/infrastructure/passive_agent/ - Repositories, clients, factory
 """
 
 import os
 import time
-import json
 import redis
 import threading
-import hashlib
-import tempfile
-import requests
-from typing import Dict, Any, List, Optional, Set
-from dataclasses import dataclass
+from typing import Dict, Any, List, Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from pydantic import BaseModel
 import uvicorn
 
-# Disable ChromaDB telemetry (fixes "capture() takes 1 positional argument" errors)
+# Disable ChromaDB telemetry
 os.environ["ANONYMIZED_TELEMETRY"] = "false"
 
-import chromadb
-import numpy as np
-
-from .models import (
-    ComponentType, EventType, LogEntry, ConsensusVote, RCPConfig
-)
-from .logging_utils import StructuredLogger
-from .embedding_utils import (
-    GCSEmbeddingStore,
-    load_embeddings_npz,
-    embed_query,
-    compute_embeddings,
-    DEFAULT_EMBEDDING_MODEL,
-    get_model_folder_name
-)
+from .models import EventType
+from .logging_utils import StructuredLogger, ComponentType
 from .debug_utils import (
-    debug_rfi_received, debug_shard_loading, debug_retrieval,
-    debug_l2_verification, debug_quadrant_calculation, debug_vote_created,
-    debug_worker_no_results, debug_log, DEBUG_BREAKPOINTS
+    debug_rfi_received,
+    debug_vote_created,
+    debug_worker_no_results,
+    debug_log,
 )
+from .infrastructure.passive_agent import PassiveAgentFactory
+from .application.passive_agent import ProcessRFIRequest, ProcessRFIResponse
 
 # Configuration
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 WORKER_ID = os.getenv("HOSTNAME", f"worker-{os.getpid()}")
-WORKER_EPOCH = os.getenv("WORKER_EPOCH", "2020")  # Default epoch (can handle any shard)
+WORKER_EPOCH = os.getenv("WORKER_EPOCH", "2020")  # Default epoch
 HISTORY_BUCKET = os.getenv("HISTORY_BUCKET", None)
-HISTORY_SCALE = os.getenv("HISTORY_SCALE", "medium")  # Scale level for data
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
-
-# SLM Service for L2 verification (per spec: SLM-based reasoning, not token overlap)
-SLM_SERVICE_URL = os.getenv("SLM_SERVICE_URL", "http://localhost:8081")
-SLM_VERIFY_TIMEOUT = float(os.getenv("SLM_VERIFY_TIMEOUT", "30.0"))  # seconds (increased for cold starts)
+HISTORY_SCALE = os.getenv("HISTORY_SCALE", "medium")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+CLUSTER_ID = os.getenv("CLUSTER_ID", "cluster-alpha")
 
 logger = StructuredLogger(ComponentType.PASSIVE_WORKER)
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
@@ -76,975 +69,16 @@ RFI_STREAM = "dpr:rfi"
 GROUP_NAME = "passive_workers"
 CONSUMER_NAME = WORKER_ID
 
-
-@dataclass
-class FrozenAgentState:
-    """
-    Represents a frozen snapshot of A* at a specific point in time.
-    """
-    creation_time: str
-    epoch_year: int
-    context_summary: str = ""
-
-    def verify(self, query: str, candidate: str) -> dict:
-        """Verify candidate answer against this frozen state's knowledge."""
-        return {
-            "score": 0.85,
-            "temporal_context": f"From {self.epoch_year} perspective",
-            "prompt": f"Verify: {candidate}",
-            "response": f"Consistent with {self.creation_time} knowledge base",
-            "tokens": 10
-        }
-
-
-class PassiveWorker:
-    """
-    Passive Agent Worker with LAZY LOADING architecture.
-
-    Key changes from eager loading:
-    1. Workers start with empty vector stores
-    2. Shards are loaded on-demand when RFI specifies target_shards
-    3. Pre-computed embeddings are loaded from GCS (no runtime embedding)
-    4. Loaded shards are cached locally for subsequent requests
-    """
-
-    def __init__(self, epoch_year: int = None):
-        self.epoch_year = epoch_year or int(WORKER_EPOCH)
-        self.frozen_state = FrozenAgentState(
-            creation_time=f"{self.epoch_year}-01-01",
-            epoch_year=self.epoch_year
-        )
-
-        # RCP v4: Configuration
-        self.rcp_config = RCPConfig()
-
-        # RCP v4: Determine cluster assignment based on temporal epoch
-        # For DPR-RC, clusters represent temporal perspectives (newer vs older history)
-        self.cluster_id = self._determine_cluster_id()
-
-        # Initialize ChromaDB client (no collections yet - lazy loaded)
-        self.chroma = chromadb.Client()
-
-        # Track loaded shards and their collections
-        self._loaded_shards: Dict[str, chromadb.Collection] = {}
-        self._loading_locks: Dict[str, threading.Lock] = {}
-        self._global_lock = threading.Lock()
-
-        # Track loaded foveated summaries (shard_id -> {L1: str, L2: str})
-        self._foveated_context: Dict[str, Dict[str, str]] = {}
-
-        # GCS embedding store (lazy initialized)
-        self._gcs_store: Optional[GCSEmbeddingStore] = None
-        self._cache_dir = tempfile.mkdtemp(prefix="dpr_worker_")
-
-        logger.logger.info(
-            f"PassiveWorker initialized (lazy loading mode). "
-            f"Bucket: {HISTORY_BUCKET}, Scale: {HISTORY_SCALE}, Model: {EMBEDDING_MODEL}, "
-            f"Cluster: {self.cluster_id}"
-        )
-
-    def _determine_cluster_id(self) -> str:
-        """
-        RCP v4: Determine which adversarial cluster this worker belongs to.
-
-        For DPR-RC temporal sharding:
-        - C_RECENT: Shards from 2020 onwards (newer historical versions)
-        - C_OLDER: Shards before 2020 (older historical versions)
-
-        This enables temporal consensus detection: artifacts approved by both
-        clusters are verified across time periods (strong consensus).
-        """
-        if self.epoch_year >= 2020:
-            return "C_RECENT"
-        else:
-            return "C_OLDER"
-
-    def _compute_binary_vote(self, confidence: float) -> int:
-        """
-        RCP v4 Equation 1: Convert continuous confidence to binary vote.
-
-        v(ω, a) ∈ {0, 1}
-        v(ω, a) = 1 if confidence >= threshold, else 0
-        """
-        return 1 if confidence >= self.rcp_config.vote_threshold else 0
-
-    def _get_gcs_store(self) -> Optional[GCSEmbeddingStore]:
-        """Lazy-initialize GCS store."""
-        if self._gcs_store is None and HISTORY_BUCKET:
-            try:
-                self._gcs_store = GCSEmbeddingStore(
-                    bucket_name=HISTORY_BUCKET,
-                    cache_dir=self._cache_dir
-                )
-            except Exception as e:
-                logger.logger.warning(f"Could not initialize GCS store: {e}")
-        return self._gcs_store
-
-    def _load_foveated_summaries(self, shard_id: str) -> Dict[str, str]:
-        """
-        Load foveated summaries (L1, L2) for a shard from GCS.
-
-        Structure:
-        - L1: Per-shard summary (foveated/{scale}/L1/{shard_id}.json)
-        - L2: Epoch-level summary (foveated/{scale}/L2/epoch_{epoch_id}.json)
-
-        Returns:
-            Dict with 'L1' and 'L2' keys containing summary text
-        """
-        # Check cache first
-        if shard_id in self._foveated_context:
-            return self._foveated_context[shard_id]
-
-        summaries = {"L1": "", "L2": ""}
-
-        if not HISTORY_BUCKET:
-            return summaries
-
-        try:
-            from google.cloud import storage
-            client = storage.Client()
-            bucket = client.bucket(HISTORY_BUCKET)
-
-            # Load L1 summary (shard-specific)
-            l1_blob_path = f"foveated/{HISTORY_SCALE}/L1/{shard_id}.json"
-            l1_blob = bucket.blob(l1_blob_path)
-
-            if l1_blob.exists():
-                l1_data = json.loads(l1_blob.download_as_text())
-                summaries["L1"] = l1_data.get("summary", "")
-                logger.logger.debug(f"Loaded L1 summary for {shard_id}: {len(summaries['L1'])} chars")
-
-            # Load L2 summary (epoch-level)
-            # Extract epoch ID from shard metadata if available
-            # For tempo-normalized shards, epoch is derived from shard manifest
-            # Fallback: use year from shard_id if legacy format
-
-            # Try to get epoch from manifest (if available)
-            # For now, skip L2 if we can't determine epoch reliably
-            # TODO: Load epoch mapping from shard manifest
-
-            logger.logger.debug(f"Foveated context loaded for {shard_id}: L1={len(summaries['L1'])} chars")
-
-        except Exception as e:
-            logger.logger.warning(f"Failed to load foveated summaries for {shard_id}: {e}")
-
-        # Cache the result
-        self._foveated_context[shard_id] = summaries
-        return summaries
-
-    def _get_loading_lock(self, shard_id: str) -> threading.Lock:
-        """Get or create a lock for loading a specific shard."""
-        with self._global_lock:
-            if shard_id not in self._loading_locks:
-                self._loading_locks[shard_id] = threading.Lock()
-            return self._loading_locks[shard_id]
-
-    def _load_shard_on_demand(self, shard_id: str) -> Optional[chromadb.Collection]:
-        """
-        Load a shard on-demand if not already loaded.
-
-        Priority:
-        1. Check if already loaded (return cached collection)
-        2. Try to load pre-computed embeddings from GCS
-        3. Fall back to raw JSON from GCS (compute embeddings locally)
-        4. Fall back to Redis cache
-        5. Fall back to generated fallback data
-
-        Args:
-            shard_id: Shard identifier (e.g., "shard_2020")
-
-        Returns:
-            ChromaDB collection with loaded data, or None if loading failed
-        """
-        # Fast path: already loaded
-        if shard_id in self._loaded_shards:
-            return self._loaded_shards[shard_id]
-
-        # Acquire per-shard lock to prevent concurrent loading
-        lock = self._get_loading_lock(shard_id)
-        with lock:
-            # Double-check after acquiring lock
-            if shard_id in self._loaded_shards:
-                return self._loaded_shards[shard_id]
-
-            logger.logger.info(f"Loading shard on-demand: {shard_id}")
-
-            # Create collection for this shard
-            collection = self.chroma.get_or_create_collection(
-                name=f"history_{shard_id}",
-                metadata={"hnsw:space": "cosine"}
-            )
-
-            # Try loading strategies in order
-            loaded = False
-
-            # Strategy 1: Pre-computed embeddings from GCS
-            gcs_store = self._get_gcs_store()
-            strategy_used = None
-            doc_count = 0
-
-            if gcs_store and not loaded:
-                loaded = self._load_from_gcs_embeddings(shard_id, collection, gcs_store)
-                if loaded:
-                    strategy_used = "GCS Pre-computed Embeddings"
-                    doc_count = collection.count()
-
-            # Strategy 2: Raw JSON from GCS (compute embeddings locally)
-            if gcs_store and not loaded:
-                loaded = self._load_from_gcs_raw(shard_id, collection, gcs_store)
-                if loaded:
-                    strategy_used = "GCS Raw JSON + Local Embedding"
-                    doc_count = collection.count()
-
-            # Strategy 3: Redis cache
-            if not loaded:
-                loaded = self._load_from_redis_cache(shard_id, collection)
-                if loaded:
-                    strategy_used = "Redis Cache"
-                    doc_count = collection.count()
-
-            # Strategy 4: Fallback generated data
-            if not loaded:
-                loaded = self._generate_fallback_data(shard_id, collection)
-                if loaded:
-                    strategy_used = "Fallback Generated"
-                    doc_count = collection.count()
-
-            # DEBUG: Shard loading result
-            debug_shard_loading(
-                WORKER_ID, shard_id,
-                strategy=strategy_used or "FAILED",
-                doc_count=doc_count,
-                success=loaded
-            )
-
-            if loaded:
-                self._loaded_shards[shard_id] = collection
-
-                # Load foveated summaries for this shard
-                self._load_foveated_summaries(shard_id)
-
-                logger.logger.info(
-                    f"Shard {shard_id} loaded: {collection.count()} documents"
-                )
-                return collection
-            else:
-                logger.logger.warning(f"Failed to load shard {shard_id}")
-                return None
-
-    def _load_from_gcs_embeddings(
-        self,
-        shard_id: str,
-        collection: chromadb.Collection,
-        gcs_store: GCSEmbeddingStore
-    ) -> bool:
-        """Load pre-computed embeddings from GCS."""
-        try:
-            result = gcs_store.download_embeddings(
-                model_id=EMBEDDING_MODEL,
-                scale=HISTORY_SCALE,
-                shard_id=shard_id
-            )
-
-            if result is None:
-                return False
-
-            embeddings, doc_ids, texts, metadatas, metadata = result
-
-            logger.logger.info(
-                f"Loaded pre-computed embeddings from GCS: "
-                f"{metadata.num_documents} docs, model={metadata.model_id}"
-            )
-
-            # Insert into ChromaDB with pre-computed embeddings
-            self._bulk_insert_with_embeddings(
-                collection, doc_ids, texts, metadatas, embeddings
-            )
-
-            return True
-
-        except Exception as e:
-            logger.logger.warning(f"Failed to load embeddings from GCS: {e}")
-            return False
-
-    def _load_from_gcs_raw(
-        self,
-        shard_id: str,
-        collection: chromadb.Collection,
-        gcs_store: GCSEmbeddingStore
-    ) -> bool:
-        """Load raw JSON from GCS and compute embeddings locally."""
-        try:
-            events = gcs_store.download_raw_shard(
-                scale=HISTORY_SCALE,
-                shard_id=shard_id
-            )
-
-            if not events:
-                return False
-
-            logger.logger.info(
-                f"Loaded raw JSON from GCS: {len(events)} events. "
-                f"Computing embeddings locally..."
-            )
-
-            # Extract texts
-            texts = [event['content'] for event in events]
-            doc_ids = [event['id'] for event in events]
-            metadatas = [
-                {
-                    "timestamp": event.get('timestamp', ''),
-                    "topic": event.get('topic', ''),
-                    "event_type": event.get('event_type', ''),
-                    "perspective": event.get('perspective', '')
-                }
-                for event in events
-            ]
-
-            # Compute embeddings locally
-            embeddings = compute_embeddings(texts, EMBEDDING_MODEL)
-
-            # Insert with embeddings
-            self._bulk_insert_with_embeddings(
-                collection, doc_ids, texts, metadatas, embeddings
-            )
-
-            return True
-
-        except Exception as e:
-            logger.logger.warning(f"Failed to load raw from GCS: {e}")
-            return False
-
-    def _load_from_redis_cache(
-        self,
-        shard_id: str,
-        collection: chromadb.Collection
-    ) -> bool:
-        """Load from Redis cache (benchmark pre-loaded data)."""
-        try:
-            # Extract year from shard_id (e.g., "shard_2020" -> "2020")
-            year = shard_id.replace("shard_", "")
-            cache_key = f"dpr:history_cache:{year}"
-            cached = redis_client.get(cache_key)
-
-            if not cached:
-                return False
-
-            documents = json.loads(cached)
-            logger.logger.info(f"Loaded {len(documents)} documents from Redis cache")
-
-            # Insert into collection (let ChromaDB compute embeddings)
-            self._bulk_insert(collection, documents)
-            return True
-
-        except Exception as e:
-            logger.logger.warning(f"Failed to load from Redis cache: {e}")
-            return False
-
-    def _generate_fallback_data(
-        self,
-        shard_id: str,
-        collection: chromadb.Collection
-    ) -> bool:
-        """Generate fallback data from local dataset or minimal templates."""
-        try:
-            # Extract year from shard_id
-            year_str = shard_id.replace("shard_", "")
-            try:
-                year = int(year_str)
-            except ValueError:
-                year = 2020
-
-            # OPTION 1: Try to load from local benchmark dataset
-            # This provides real phonotactic entities for benchmark compatibility
-            history_scale = os.getenv('HISTORY_SCALE', 'small')
-            dataset_path = f"benchmark_results_research/{history_scale}/dataset.json"
-
-            if os.path.exists(dataset_path):
-                try:
-                    with open(dataset_path, 'r') as f:
-                        dataset = json.load(f)
-
-                    # Extract claims for this year's shard
-                    claims = dataset.get('claims', {})
-                    year_claims = [
-                        claim for claim in claims.values()
-                        if claim.get('timestamp', '').startswith(str(year))
-                    ]
-
-                    if year_claims:
-                        fallback_docs = []
-                        for i, claim in enumerate(year_claims):
-                            doc_id = f"fallback_{year}_{i}"
-                            content = claim.get('content', '')
-                            fallback_docs.append({
-                                "id": doc_id,
-                                "content": content,
-                                "metadata": {
-                                    "year": year,
-                                    "type": "fallback_dataset",
-                                    "claim_id": claim.get('id', ''),
-                                    "index": i
-                                }
-                            })
-
-                        self._bulk_insert(collection, fallback_docs)
-                        logger.logger.info(
-                            f"Generated {len(fallback_docs)} fallback docs from dataset "
-                            f"(year={year}, path={dataset_path})"
-                        )
-                        return True
-                except Exception as e:
-                    logger.logger.warning(f"Failed to load from dataset {dataset_path}: {e}")
-
-            # OPTION 2: If no dataset, use generic templates (for testing only)
-            # This will fail benchmarks but at least won't crash
-            fallback_docs = []
-            for i in range(10):
-                doc_id = f"fallback_{year}_{i}"
-                content = (
-                    f"Historical record from {year}: Research milestone {i} achieved. "
-                    f"Progress in domain area with metrics showing improvement. "
-                    f"Epoch {year} data point {i}."
-                )
-                fallback_docs.append({
-                    "id": doc_id,
-                    "content": content,
-                    "metadata": {"year": year, "type": "fallback_generic", "index": i}
-                })
-
-            self._bulk_insert(collection, fallback_docs)
-            logger.logger.warning(
-                f"Generated {len(fallback_docs)} GENERIC fallback documents for year {year}. "
-                f"Benchmark accuracy will be 0%. Load real data from GCS or ensure dataset "
-                f"exists at {dataset_path} to fix."
-            )
-            return True
-
-        except Exception as e:
-            logger.logger.warning(f"Failed to generate fallback data: {e}")
-            return False
-
-    def _bulk_insert_with_embeddings(
-        self,
-        collection: chromadb.Collection,
-        doc_ids: List[str],
-        texts: List[str],
-        metadatas: List[Dict],
-        embeddings: np.ndarray
-    ):
-        """Bulk insert documents with pre-computed embeddings."""
-        batch_size = 1000
-
-        for i in range(0, len(doc_ids), batch_size):
-            batch_ids = doc_ids[i:i + batch_size]
-            batch_texts = texts[i:i + batch_size]
-            batch_metadatas = metadatas[i:i + batch_size]
-            batch_embeddings = embeddings[i:i + batch_size].tolist()
-
-            try:
-                collection.add(
-                    ids=batch_ids,
-                    documents=batch_texts,
-                    metadatas=batch_metadatas,
-                    embeddings=batch_embeddings
-                )
-            except Exception as e:
-                # Handle duplicate IDs
-                if "duplicate" in str(e).lower() or "already" in str(e).lower():
-                    self._insert_non_duplicates(
-                        collection, batch_ids, batch_texts,
-                        batch_metadatas, batch_embeddings
-                    )
-                else:
-                    logger.logger.error(f"Failed to insert batch: {e}")
-
-    def _insert_non_duplicates(
-        self,
-        collection: chromadb.Collection,
-        ids: List[str],
-        texts: List[str],
-        metadatas: List[Dict],
-        embeddings: List[List[float]]
-    ):
-        """Insert only non-duplicate documents."""
-        try:
-            existing = collection.get(ids=ids)
-            existing_ids = set(existing.get('ids', []))
-
-            new_ids = []
-            new_texts = []
-            new_metadatas = []
-            new_embeddings = []
-
-            for idx, doc_id in enumerate(ids):
-                if doc_id not in existing_ids:
-                    new_ids.append(doc_id)
-                    new_texts.append(texts[idx])
-                    new_metadatas.append(metadatas[idx])
-                    new_embeddings.append(embeddings[idx])
-
-            if new_ids:
-                collection.add(
-                    ids=new_ids,
-                    documents=new_texts,
-                    metadatas=new_metadatas,
-                    embeddings=new_embeddings
-                )
-        except Exception as e:
-            logger.logger.warning(f"Could not add non-duplicate docs: {e}")
-
-    def _bulk_insert(self, collection: chromadb.Collection, documents: List[Dict]):
-        """Bulk insert documents (ChromaDB computes embeddings)."""
-        if not documents:
-            return
-
-        ids = []
-        contents = []
-        metadatas = []
-
-        for doc in documents:
-            doc_id = doc.get('id', hashlib.md5(doc['content'].encode()).hexdigest()[:12])
-            ids.append(doc_id)
-            contents.append(doc['content'])
-            metadatas.append(doc.get('metadata', {}))
-
-        batch_size = 1000
-        for i in range(0, len(ids), batch_size):
-            batch_ids = ids[i:i + batch_size]
-            batch_contents = contents[i:i + batch_size]
-            batch_metadatas = metadatas[i:i + batch_size]
-
-            try:
-                collection.add(
-                    ids=batch_ids,
-                    documents=batch_contents,
-                    metadatas=batch_metadatas
-                )
-            except Exception as e:
-                error_msg = str(e).lower()
-                if "duplicate" in error_msg or "already" in error_msg:
-                    # Skip duplicates
-                    pass
-                else:
-                    logger.logger.error(f"Failed to insert batch: {e}")
-
-    def ingest_benchmark_data(self, events: List[Dict], shard_id: str = None):
-        """
-        Public method to ingest benchmark data directly.
-        Called by benchmark harness to load synthetic history.
-        """
-        if shard_id is None:
-            shard_id = f"shard_{self.epoch_year}"
-
-        # Get or create collection for this shard
-        collection = self.chroma.get_or_create_collection(
-            name=f"history_{shard_id}",
-            metadata={"hnsw:space": "cosine"}
-        )
-
-        documents = []
-        for event in events:
-            documents.append({
-                "id": event.get('id', hashlib.md5(event['content'].encode()).hexdigest()[:12]),
-                "content": event['content'],
-                "metadata": {
-                    "timestamp": event.get('timestamp', ''),
-                    "topic": event.get('topic', ''),
-                    "event_type": event.get('event_type', ''),
-                    "perspective": event.get('perspective', '')
-                }
-            })
-
-        self._bulk_insert(collection, documents)
-        self._loaded_shards[shard_id] = collection
-
-        # Also cache in Redis for other workers
-        try:
-            year = shard_id.replace("shard_", "")
-            cache_key = f"dpr:history_cache:{year}"
-            # FIX: Increased TTL from 1 hour to 24 hours for long-running benchmarks
-            redis_client.setex(cache_key, 86400, json.dumps(documents))
-        except Exception as e:
-            logger.logger.warning(f"Failed to cache in Redis: {e}")
-
-    def retrieve(
-        self,
-        query_text: str,
-        shard_id: str,
-        timestamp_context: str = None
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Retrieve relevant historical context from a specific shard.
-
-        Uses the SAME embedding model (all-MiniLM-L6-v2) for query embedding
-        as was used for document embeddings, ensuring consistent vector space.
-
-        Args:
-            query_text: Query to search for
-            shard_id: Which shard to search in
-            timestamp_context: Optional timestamp filter
-
-        Returns:
-            Best matching document or None
-        """
-        # Load shard on-demand if needed
-        collection = self._load_shard_on_demand(shard_id)
-
-        if collection is None or collection.count() == 0:
-            logger.logger.warning(f"Shard {shard_id} is empty or failed to load")
-            return None
-
-        try:
-            # Embed query using the SAME model as documents (fixes embedding mismatch)
-            query_embedding = embed_query(query_text, EMBEDDING_MODEL)
-
-            # Log ChromaDB query
-            logger.log_message(
-                trace_id="internal",  # No trace_id available at this level
-                direction="internal",
-                message_type="chromadb_query",
-                payload={
-                    "query_text": query_text[:500],
-                    "shard_id": shard_id,
-                    "n_results": 3
-                },
-                metadata={"worker_id": WORKER_ID, "embedding_model": EMBEDDING_MODEL}
-            )
-
-            # Query using pre-computed embedding vector
-            results = collection.query(
-                query_embeddings=[query_embedding.tolist()],
-                n_results=3
-            )
-
-            if not results['documents'] or not results['documents'][0]:
-                # DEBUG: No retrieval results
-                debug_retrieval(WORKER_ID, shard_id, query_text, None, 0.0)
-                return None
-
-            result = {
-                "content": results['documents'][0][0],
-                "id": results['ids'][0][0],
-                "metadata": results['metadatas'][0][0] if results['metadatas'] else {},
-                "distance": results['distances'][0][0] if results.get('distances') else 0.0
-            }
-
-            # Log ChromaDB results
-            docs = results['documents'][0] if results['documents'] else []
-            distances = results['distances'][0] if results.get('distances') else []
-            metadatas = results['metadatas'][0] if results.get('metadatas') else []
-            logger.log_message(
-                trace_id="internal",
-                direction="internal",
-                message_type="chromadb_results",
-                payload={
-                    "shard_id": shard_id,
-                    "results": [
-                        {
-                            "content": doc[:500],
-                            "distance": dist,
-                            "metadata": meta
-                        } for doc, dist, meta in zip(docs, distances, metadatas)
-                    ]
-                },
-                metadata={"worker_id": WORKER_ID, "result_count": len(docs)}
-            )
-
-            # DEBUG: Retrieval successful
-            debug_retrieval(
-                WORKER_ID, shard_id, query_text, result,
-                distance=result.get("distance", 0.0)
-            )
-
-            return result
-        except Exception as e:
-            logger.logger.error(f"Retrieval error: {e}")
-            # DEBUG: Retrieval error
-            debug_log(f"PassiveWorker[{WORKER_ID}]", f"Retrieval error: {e}")
-            return None
-
-    def verify_l2(self, content: str, query: str, depth: int = 0, shard_id: str = None) -> float:
-        """
-        L2 Verification using SLM reasoning with hierarchical foveated context.
-
-        Per Mathematical Model Section 5.2, Equation 9:
-        C(r_p) = V(q, context_p) · (1 / (1 + i))
-
-        This calls the SLM service to get a reasoned verification judgment,
-        rather than using simple token overlap.
-
-        Enhanced with foveated context: L1 (shard summary) and L2 (epoch summary)
-        provide hierarchical context for better verification.
-        """
-        # Load foveated context if shard_id provided
-        foveated_context = {}
-        if shard_id:
-            foveated_context = self._foveated_context.get(shard_id, {})
-
-        # Retry with exponential backoff (3 attempts: 0s, 2s, 4s delays)
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                if attempt > 0:
-                    delay = 2 ** attempt  # Exponential backoff: 2s, 4s
-                    logger.logger.debug(f"Retrying SLM verify (attempt {attempt + 1}/{max_retries}) after {delay}s delay")
-                    time.sleep(delay)
-
-                # Build verification request with optional foveated context
-                verify_request = {
-                    "query": query,
-                    "retrieved_content": content[:2000],  # Limit content size
-                    "trace_id": f"{WORKER_ID}_{time.time()}"
-                }
-
-                # Add hierarchical context if available
-                if foveated_context.get("L1"):
-                    verify_request["shard_summary"] = foveated_context["L1"][:500]  # L1 context
-                if foveated_context.get("L2"):
-                    verify_request["epoch_summary"] = foveated_context["L2"][:500]  # L2 context
-
-                # Log SLM verification request
-                logger.log_message(
-                    trace_id=verify_request["trace_id"],
-                    direction="request",
-                    message_type="slm_verify",
-                    payload=verify_request,
-                    metadata={"slm_url": SLM_SERVICE_URL, "worker_id": WORKER_ID, "attempt": attempt + 1}
-                )
-
-                response = requests.post(
-                    f"{SLM_SERVICE_URL}/verify",
-                    json=verify_request,
-                    timeout=SLM_VERIFY_TIMEOUT
-                )
-
-                if response.status_code == 200:
-                    result = response.json()
-                    base_score = result.get("confidence", 0.5)
-
-                    # Apply depth penalty per spec equation
-                    depth_penalty = 1.0 / (1.0 + depth)
-                    confidence = base_score * depth_penalty
-
-                    # Log SLM verification response
-                    logger.log_message(
-                        trace_id=verify_request["trace_id"],
-                        direction="response",
-                        message_type="slm_verify",
-                        payload=result,
-                        metadata={"confidence": confidence, "base_score": base_score, "worker_id": WORKER_ID, "attempt": attempt + 1}
-                    )
-
-                    logger.logger.debug(
-                        f"SLM verification: confidence={base_score:.2f}, "
-                        f"supports={result.get('supports_query')}, "
-                        f"reasoning={result.get('reasoning', '')[:100]} [attempt {attempt + 1}]"
-                    )
-
-                    # DEBUG: L2 verification via SLM
-                    debug_l2_verification(
-                        WORKER_ID, query, content, confidence,
-                        method="SLM", slm_response=result
-                    )
-
-                    return max(0.0, min(1.0, confidence))
-                elif response.status_code == 503:
-                    # Service unavailable (model still loading), retry
-                    logger.logger.warning(
-                        f"SLM service not ready (503), attempt {attempt + 1}/{max_retries}"
-                    )
-                    if attempt == max_retries - 1:
-                        # Last attempt failed, fall back
-                        break
-                    continue
-                else:
-                    # Other error codes, don't retry
-                    logger.logger.warning(
-                        f"SLM service returned {response.status_code}, falling back to heuristic"
-                    )
-                    break
-
-            except requests.exceptions.RequestException as e:
-                logger.logger.warning(f"SLM service error (attempt {attempt + 1}/{max_retries}): {e}")
-                if attempt == max_retries - 1:
-                    # Last attempt failed, fall back
-                    break
-                continue
-
-        # Fallback: use heuristic after all retries exhausted
-        logger.logger.info(f"Using fallback verification after {max_retries} attempts")
-        fallback_confidence = self._verify_l2_fallback(content, query, depth)
-        # DEBUG: L2 verification via fallback
-        debug_l2_verification(
-            WORKER_ID, query, content, fallback_confidence,
-            method=f"Fallback (SLM unavailable after {max_retries} retries)"
-        )
-        return fallback_confidence
-
-    def _verify_l2_fallback(self, content: str, query: str, depth: int = 0) -> float:
-        """
-        Fallback L2 verification using token overlap.
-
-        Used only when SLM service is unavailable.
-        """
-        query_tokens = set(query.lower().split())
-        content_tokens = set(content.lower().split())
-
-        if not query_tokens:
-            return 0.0
-
-        intersection = query_tokens & content_tokens
-        union = query_tokens | content_tokens
-
-        if not union:
-            return 0.0
-
-        base_score = len(intersection) / len(union)
-        length_factor = min(1.0, len(content) / 200.0)
-        v_score = (base_score * 0.6 + length_factor * 0.4)
-        depth_penalty = 1.0 / (1.0 + depth)
-        confidence = v_score * depth_penalty
-
-        return max(0.0, min(1.0, confidence))
-
-    def calculate_quadrant(self, content: str, confidence: float) -> List[float]:
-        """
-        L3 Semantic Quadrant Topology calculation.
-
-        Uses deterministic MD5 hash to ensure reproducibility across runs.
-        Python's built-in hash() is non-deterministic (randomized seed per process).
-        """
-        # Use deterministic hash (MD5) instead of Python's hash()
-        content_hash = int(hashlib.md5(content.encode('utf-8')).hexdigest()[:16], 16)
-        x_base = ((content_hash % 100) / 100.0)
-        x = (x_base * 0.5) + (confidence * 0.5)
-        y_base = (((content_hash >> 8) % 100) / 100.0)
-        y = (y_base * 0.3) + (confidence * 0.7)
-        return [round(x, 2), round(y, 2)]
-
-    def process_rfi(self, rfi_data: Dict[str, Any]) -> List[ConsensusVote]:
-        """
-        Process a Request for Information (RFI) from the Active Agent.
-
-        LAZY LOADING: Loads target shards on-demand when RFI specifies them.
-
-        Query handling:
-        - query_text: Enhanced query (from SLM) used for embedding-based retrieval
-        - original_query: Original user query used for SLM verification
-
-        Returns:
-            List of ConsensusVote objects (can be empty if no relevant content found)
-        """
-        trace_id = rfi_data.get('trace_id', 'unknown')
-        query_text = rfi_data.get('query_text', '')  # Enhanced query for retrieval
-        original_query = rfi_data.get('original_query', query_text)  # Original for verification
-        ts_context = rfi_data.get('timestamp_context', '')
-        target_shards_str = rfi_data.get('target_shards', '[]')
-
-        # DEBUG: RFI received
-        debug_rfi_received(trace_id, WORKER_ID, rfi_data)
-
-        # Parse target shards - support both string and list formats
-        try:
-            if isinstance(target_shards_str, list):
-                target_shards = target_shards_str
-            elif target_shards_str:
-                target_shards = json.loads(target_shards_str)
-            else:
-                target_shards = []
-        except json.JSONDecodeError:
-            target_shards = []
-
-        # If no target shards specified, use default based on epoch
-        if not target_shards or "broadcast" in target_shards:
-            target_shards = [f"shard_{self.epoch_year}"]
-
-        debug_log(f"PassiveWorker[{WORKER_ID}]", f"Target shards: {target_shards}")
-
-        votes = []
-
-        # Process each target shard
-        for shard_id in target_shards:
-            # Skip if shard doesn't match our epoch (for sharded deployments)
-            # In shard-agnostic mode, we handle all shards
-            my_shard = f"shard_{self.epoch_year}"
-
-            # Retrieve from this shard using ENHANCED query (better embeddings match)
-            doc = self.retrieve(query_text, shard_id, ts_context)
-
-            if not doc:
-                logger.logger.debug(f"No relevant history in {shard_id} for: {query_text[:50]}...")
-                debug_worker_no_results(WORKER_ID, trace_id, shard_id, "No relevant documents found")
-                continue
-
-            # L2 Verification using ORIGINAL query (SLM judges against user's intent)
-            # Include shard_id for foveated context enhancement
-            depth = doc.get('metadata', {}).get('hierarchy_depth', 0)
-            confidence = self.verify_l2(doc['content'], original_query, depth, shard_id)
-
-            if confidence < 0.3:
-                logger.logger.debug(f"Confidence {confidence:.2f} below threshold")
-                debug_worker_no_results(
-                    WORKER_ID, trace_id, shard_id,
-                    f"Confidence {confidence:.2f} below 0.3 threshold"
-                )
-                continue
-
-            # RCP v4: Compute binary vote from confidence
-            binary_vote = self._compute_binary_vote(confidence)
-            content_hash = logger.hash_payload(doc['content'])
-
-            # RCP v4: Semantic quadrant will be computed by active agent as [v+, v-]
-            # For now, use placeholder - active agent will recalculate based on all votes
-            quadrant = [0.0, 0.0]
-
-            # DEBUG: Quadrant calculation
-            debug_quadrant_calculation(WORKER_ID, content_hash, confidence, quadrant)
-
-            # RCP v4: Cast vote with cluster information
-            vote = ConsensusVote(
-                trace_id=trace_id,
-                worker_id=WORKER_ID,
-                cluster_id=self.cluster_id,
-                content_hash=content_hash,
-                confidence_score=confidence,
-                binary_vote=binary_vote,
-                semantic_quadrant=quadrant,
-                content_snippet=doc['content'][:500],
-                author_cluster=self.cluster_id  # Worker is the author of this artifact
-            )
-
-            votes.append(vote)
-
-            # Log vote creation
-            logger.log_message(
-                trace_id=trace_id,
-                direction="internal",
-                message_type="vote_created",
-                payload=vote.model_dump(),
-                metadata={"worker_id": WORKER_ID, "cluster": self.cluster_id, "shard_id": shard_id}
-            )
-
-            # DEBUG: Vote created
-            debug_vote_created(WORKER_ID, trace_id, vote.model_dump())
-
-            # Also publish to Redis if available (for hybrid mode)
-            try:
-                redis_client.publish(f"dpr:responses:{trace_id}", json.dumps(vote.model_dump()))
-            except Exception:
-                pass  # Redis not available in HTTP-only mode
-
-            logger.log_event(
-                trace_id, EventType.VOTE_CAST, vote.model_dump(),
-                metrics={"confidence": confidence, "shard": shard_id}
-            )
-
-        return votes
-
-    def get_loaded_shards(self) -> List[str]:
-        """Return list of currently loaded shard IDs."""
-        return list(self._loaded_shards.keys())
+# Global use case instance
+_use_case: Optional[Any] = None
+
+
+def get_use_case():
+    """Lazy initialize use case from factory."""
+    global _use_case
+    if _use_case is None:
+        _use_case = PassiveAgentFactory.create_from_env()
+    return _use_case
 
 
 # FastAPI Application
@@ -1065,8 +99,17 @@ app = FastAPI(title="DPR-PassiveWorker", lifespan=lifespan)
 @app.get("/health")
 def health_check():
     """Health check endpoint"""
-    global _worker_instance
-    loaded_shards = _worker_instance.get_loaded_shards() if _worker_instance else []
+    use_case = get_use_case()
+
+    # Get loaded shards from repository
+    loaded_shards = []
+    if use_case and hasattr(use_case, 'shard_repository'):
+        try:
+            # Access the loaded shards from the repository
+            loaded_shards = list(use_case.shard_repository._loaded_shards.keys())
+        except Exception:
+            loaded_shards = []
+
     return {
         "status": "healthy",
         "worker_id": WORKER_ID,
@@ -1075,37 +118,34 @@ def health_check():
         "loaded_shards": loaded_shards,
         "bucket": HISTORY_BUCKET,
         "scale": HISTORY_SCALE,
-        "model": EMBEDDING_MODEL
+        "model": EMBEDDING_MODEL,
     }
-
-
-@app.post("/ingest")
-def ingest_data(data: Dict[str, Any]):
-    """Endpoint to ingest benchmark data"""
-    global _worker_instance
-    if _worker_instance and 'events' in data:
-        shard_id = data.get('shard_id', None)
-        _worker_instance.ingest_benchmark_data(data['events'], shard_id)
-        return {"status": "ok", "ingested": len(data['events'])}
-    return {"status": "error", "message": "No worker instance or invalid data"}
 
 
 @app.get("/shards")
 def list_shards():
     """List loaded shards and their document counts"""
-    global _worker_instance
-    if _worker_instance:
-        shards = {}
-        for shard_id, collection in _worker_instance._loaded_shards.items():
-            shards[shard_id] = {
-                "count": collection.count()
-            }
-        return {"shards": shards}
-    return {"shards": {}}
+    use_case = get_use_case()
+    shards = {}
+
+    if use_case and hasattr(use_case, 'shard_repository'):
+        try:
+            for shard_id in use_case.shard_repository._loaded_shards.keys():
+                shard_data = use_case.shard_repository.get_shard_data(shard_id)
+                if shard_data:
+                    shards[shard_id] = {
+                        "count": shard_data.get("document_count", 0),
+                        "loaded_from": shard_data.get("loaded_from", "unknown"),
+                    }
+        except Exception:
+            pass
+
+    return {"shards": shards}
 
 
 class RFIRequest(BaseModel):
     """Request model for HTTP-based RFI processing"""
+
     trace_id: str
     query_text: str
     original_query: Optional[str] = None
@@ -1115,6 +155,7 @@ class RFIRequest(BaseModel):
 
 class VoteResponse(BaseModel):
     """Response model for HTTP-based RFI processing"""
+
     worker_id: str
     votes: List[Dict[str, Any]]
     shards_queried: List[str]
@@ -1130,11 +171,7 @@ def process_rfi_http(request: RFIRequest):
 
     Returns votes synchronously instead of publishing to Redis.
     """
-    global _worker_instance
-
-    if not _worker_instance:
-        # Initialize worker if not already done
-        _worker_instance = PassiveWorker()
+    use_case = get_use_case()
 
     # Log RFI receipt
     logger.log_message(
@@ -1142,53 +179,68 @@ def process_rfi_http(request: RFIRequest):
         direction="request",
         message_type="rfi_received",
         payload=request.model_dump(),
-        metadata={"worker_id": WORKER_ID, "cluster": _worker_instance.cluster_id if _worker_instance else "unknown"}
+        metadata={"worker_id": WORKER_ID, "cluster": CLUSTER_ID},
     )
 
-    # Convert request to RFI data format
-    rfi_data = {
-        "trace_id": request.trace_id,
-        "query_text": request.query_text,
-        "original_query": request.original_query or request.query_text,
-        "target_shards": request.target_shards,  # Pass as list directly
-        "timestamp_context": request.timestamp_context or ""
-    }
+    # DEBUG: RFI received
+    debug_rfi_received(
+        request.trace_id, WORKER_ID, request.model_dump()
+    )
 
-    # Process RFI and get votes
-    votes = _worker_instance.process_rfi(rfi_data)
+    # Convert to DTO
+    rfi_request = ProcessRFIRequest(
+        trace_id=request.trace_id,
+        query_text=request.query_text,
+        original_query=request.original_query or request.query_text,
+        timestamp_context=request.timestamp_context or "",
+        target_shards=request.target_shards,
+    )
+
+    # Execute use case
+    response = use_case.execute(rfi_request)
 
     # Log vote response
     response_data = {
         "worker_id": WORKER_ID,
-        "votes": [v.model_dump() for v in votes],
-        "vote_count": len(votes)
+        "votes": response.votes,
+        "vote_count": len(response.votes),
     }
     logger.log_message(
         trace_id=request.trace_id,
         direction="response",
         message_type="vote_response",
         payload=response_data,
-        metadata={"vote_count": len(votes), "shards_queried": request.target_shards or [f"shard_{_worker_instance.epoch_year}"]}
+        metadata={
+            "vote_count": len(response.votes),
+            "shards_queried": request.target_shards or [f"shard_{WORKER_EPOCH}"],
+        },
     )
+
+    # DEBUG: Votes created
+    for vote in response.votes:
+        debug_vote_created(WORKER_ID, request.trace_id, vote)
+
+    # Also publish to Redis if available (for hybrid mode)
+    try:
+        for vote in response.votes:
+            redis_client.publish(
+                f"dpr:responses:{request.trace_id}",
+                __import__('json').dumps(vote)
+            )
+    except Exception:
+        pass  # Redis not available in HTTP-only mode
 
     # Return votes as HTTP response
     return VoteResponse(
         worker_id=WORKER_ID,
-        votes=[v.model_dump() for v in votes],
-        shards_queried=request.target_shards or [f"shard_{_worker_instance.epoch_year}"]
+        votes=response.votes,
+        shards_queried=request.target_shards or [f"shard_{WORKER_EPOCH}"],
     )
-
-
-# Global worker instance
-_worker_instance: Optional[PassiveWorker] = None
 
 
 def run_worker_loop():
     """Main worker loop - processes RFIs from Redis stream"""
-    global _worker_instance
-
-    worker = PassiveWorker()
-    _worker_instance = worker
+    use_case = get_use_case()
 
     # Initialize Stream Group
     try:
@@ -1202,22 +254,52 @@ def run_worker_loop():
     while True:
         try:
             streams = redis_client.xreadgroup(
-                GROUP_NAME,
-                CONSUMER_NAME,
-                {RFI_STREAM: ">"},
-                count=1,
-                block=2000
+                GROUP_NAME, CONSUMER_NAME, {RFI_STREAM: ">"}, count=1, block=2000
             )
 
             if streams:
                 for stream, messages in streams:
                     for message_id, data in messages:
                         try:
-                            worker.process_rfi(data)
+                            # Convert Redis data to DTO
+                            rfi_request = ProcessRFIRequest.from_dict(data)
+
+                            # DEBUG: RFI received
+                            debug_rfi_received(
+                                rfi_request.trace_id, WORKER_ID, data
+                            )
+
+                            # Execute use case
+                            response = use_case.execute(rfi_request)
+
+                            # Publish votes to Redis
+                            for vote in response.votes:
+                                redis_client.publish(
+                                    f"dpr:responses:{rfi_request.trace_id}",
+                                    __import__('json').dumps(vote),
+                                )
+
+                                # DEBUG: Vote created
+                                debug_vote_created(
+                                    WORKER_ID, rfi_request.trace_id, vote
+                                )
+
+                            # If no votes, send debug message
+                            if not response.votes:
+                                debug_worker_no_results(
+                                    WORKER_ID,
+                                    rfi_request.trace_id,
+                                    rfi_request.target_shards,
+                                    response.message,
+                                )
+
+                            # Acknowledge message
                             redis_client.xack(RFI_STREAM, GROUP_NAME, message_id)
+
                         except Exception as e:
                             logger.logger.error(f"Error processing RFI: {e}")
                             import traceback
+
                             traceback.print_exc()
 
         except redis.exceptions.ConnectionError as e:
