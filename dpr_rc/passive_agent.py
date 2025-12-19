@@ -446,7 +446,7 @@ class PassiveWorker:
         shard_id: str,
         collection: chromadb.Collection
     ) -> bool:
-        """Generate minimal fallback data for testing."""
+        """Generate fallback data from local dataset or minimal templates."""
         try:
             # Extract year from shard_id
             year_str = shard_id.replace("shard_", "")
@@ -455,6 +455,50 @@ class PassiveWorker:
             except ValueError:
                 year = 2020
 
+            # OPTION 1: Try to load from local benchmark dataset
+            # This provides real phonotactic entities for benchmark compatibility
+            history_scale = os.getenv('HISTORY_SCALE', 'small')
+            dataset_path = f"benchmark_results_research/{history_scale}/dataset.json"
+
+            if os.path.exists(dataset_path):
+                try:
+                    with open(dataset_path, 'r') as f:
+                        dataset = json.load(f)
+
+                    # Extract claims for this year's shard
+                    claims = dataset.get('claims', {})
+                    year_claims = [
+                        claim for claim in claims.values()
+                        if claim.get('timestamp', '').startswith(str(year))
+                    ]
+
+                    if year_claims:
+                        fallback_docs = []
+                        for i, claim in enumerate(year_claims):
+                            doc_id = f"fallback_{year}_{i}"
+                            content = claim.get('content', '')
+                            fallback_docs.append({
+                                "id": doc_id,
+                                "content": content,
+                                "metadata": {
+                                    "year": year,
+                                    "type": "fallback_dataset",
+                                    "claim_id": claim.get('id', ''),
+                                    "index": i
+                                }
+                            })
+
+                        self._bulk_insert(collection, fallback_docs)
+                        logger.logger.info(
+                            f"Generated {len(fallback_docs)} fallback docs from dataset "
+                            f"(year={year}, path={dataset_path})"
+                        )
+                        return True
+                except Exception as e:
+                    logger.logger.warning(f"Failed to load from dataset {dataset_path}: {e}")
+
+            # OPTION 2: If no dataset, use generic templates (for testing only)
+            # This will fail benchmarks but at least won't crash
             fallback_docs = []
             for i in range(10):
                 doc_id = f"fallback_{year}_{i}"
@@ -466,11 +510,15 @@ class PassiveWorker:
                 fallback_docs.append({
                     "id": doc_id,
                     "content": content,
-                    "metadata": {"year": year, "type": "fallback", "index": i}
+                    "metadata": {"year": year, "type": "fallback_generic", "index": i}
                 })
 
             self._bulk_insert(collection, fallback_docs)
-            logger.logger.info(f"Generated {len(fallback_docs)} fallback documents")
+            logger.logger.warning(
+                f"Generated {len(fallback_docs)} GENERIC fallback documents for year {year}. "
+                f"Benchmark accuracy will be 0%. Load real data from GCS or ensure dataset "
+                f"exists at {dataset_path} to fix."
+            )
             return True
 
         except Exception as e:

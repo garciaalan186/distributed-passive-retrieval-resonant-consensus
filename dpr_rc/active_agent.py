@@ -876,37 +876,60 @@ async def handle_query(request: QueryRequest):
             "negative_consensus": negative_consensus_set
         }
 
-        # 7. Return Raw Semantic Quadrant to A* (Orchestrator)
-        # A* interprets the superposition object without pre-generated answers
-        # to avoid autonoesis (speaking to previous versions of itself)
-        #
+        # 7. Synthesize Human-Readable Text from Superposition
+        # Generate text response for benchmark compatibility while preserving
+        # superposition structure for advanced consumers (A* orchestrator)
+        if consensus_set:
+            # High confidence: consensus facts
+            final_answer = " ".join(consensus_set)
+            if polar_set:
+                final_answer += "\n\nAdditionally, there are alternative perspectives: " + \
+                               "; ".join([p['content'] for p in polar_set])
+            confidence = 0.95
+        elif polar_set:
+            # Medium confidence: perspectival claims
+            options = [f"- {p['content']}" for p in polar_set]
+            final_answer = "The historical record shows varying perspectives:\n" + "\n".join(options)
+            confidence = 0.7
+        elif negative_consensus_set:
+            # Low confidence: only negative consensus
+            options = [f"- {p['content']}" for p in negative_consensus_set]
+            final_answer = "Limited evidence found:\n" + "\n".join(options)
+            confidence = 0.4
+        else:
+            # No data
+            final_answer = "No relevant information found in the historical record."
+            confidence = 0.0
+
         # Status is only FAILED if superposition is completely empty
         has_artifacts = bool(consensus_set or polar_set or negative_consensus_set)
         status = "SUCCESS" if has_artifacts else "FAILED"
 
         logger.log_event(trace_id, EventType.CONSENSUS_REACHED, {
             "superposition": superposition_object,
+            "final_answer": final_answer[:200] if final_answer else None,
             "num_votes": len(votes),
             "num_consensus": len(consensus_set),
             "num_polar": len(polar_set),
             "num_negative_consensus": len(negative_consensus_set),
-            "status": status
+            "status": status,
+            "confidence": confidence
         })
 
-        # DEBUG: Log superposition summary
+        # DEBUG: Log final response with synthesized text
         debug_final_response(
-            trace_id, status=status, confidence=0.0,
-            answer=f"Consensus: {len(consensus_set)}, Polar: {len(polar_set)}, Negative: {len(negative_consensus_set)}",
+            trace_id, status=status, confidence=confidence,
+            answer=final_answer,
             sources=[v.worker_id for v in votes]
         )
 
         result = RetrievalResult(
             trace_id=trace_id,
-            final_answer=None,  # A* interprets superposition
-            confidence=0.0,     # A* determines confidence
+            final_answer=final_answer,  # NOW: Synthesized text for benchmark
+            confidence=confidence,       # NOW: Calculated from quadrants
             status=status,
             sources=[v.worker_id for v in votes],
-            superposition=superposition_object
+            superposition=superposition_object  # STILL: Raw quadrant data for A*
         )
 
         # 6. Log final response to client
