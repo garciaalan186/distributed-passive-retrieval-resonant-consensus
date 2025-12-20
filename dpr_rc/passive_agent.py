@@ -84,10 +84,17 @@ def get_use_case():
 # FastAPI Application
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifespan context manager - starts worker thread on startup"""
-    worker_thread = threading.Thread(target=run_worker_loop, daemon=True)
-    worker_thread.start()
-    logger.logger.info(f"Passive Worker {WORKER_ID} started (lazy loading mode)")
+    """Lifespan context manager - starts worker thread on startup (Redis mode only)"""
+    # Only start Redis worker thread if not using HTTP mode
+    use_http_workers = os.getenv("USE_HTTP_WORKERS", "false").lower() == "true"
+
+    if not use_http_workers:
+        worker_thread = threading.Thread(target=run_worker_loop, daemon=True)
+        worker_thread.start()
+        logger.logger.info(f"Passive Worker {WORKER_ID} started (Redis mode, lazy loading)")
+    else:
+        logger.logger.info(f"Passive Worker {WORKER_ID} started (HTTP mode, lazy loading)")
+
     yield
     logger.logger.info(f"Passive Worker {WORKER_ID} shutting down")
 
