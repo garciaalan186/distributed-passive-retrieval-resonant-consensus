@@ -24,6 +24,7 @@ class Vote:
         binary_vote: int,
         author_cluster: str,
         confidence_score: float = 0.0,
+        document_ids: List[str] = None,
     ):
         self.content_hash = content_hash
         self.content_snippet = content_snippet
@@ -31,6 +32,7 @@ class Vote:
         self.binary_vote = binary_vote
         self.author_cluster = author_cluster
         self.confidence_score = confidence_score
+        self.document_ids = document_ids or []
 
 
 class ConsensusCalculator:
@@ -107,6 +109,14 @@ class ConsensusCalculator:
             # RCP v4: Compute semantic quadrant [v+, v-]
             semantic_quadrant = self._compute_semantic_quadrant(artifact_votes)
 
+            # Aggregate source document IDs from all votes for this artifact
+            source_document_ids = []
+            for vote in artifact_votes:
+                if hasattr(vote, 'document_ids') and vote.document_ids:
+                    source_document_ids.extend(vote.document_ids)
+            # Deduplicate while preserving order
+            source_document_ids = list(dict.fromkeys(source_document_ids))
+
             # Create artifact consensus object
             artifact = ArtifactConsensus(
                 content_hash=content_hash,
@@ -117,6 +127,7 @@ class ConsensusCalculator:
                 tier=tier,
                 score=score,
                 semantic_quadrant=semantic_quadrant,
+                source_document_ids=source_document_ids,
             )
 
             # Classify into tiers

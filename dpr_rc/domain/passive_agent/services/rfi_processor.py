@@ -49,6 +49,7 @@ class Vote:
         semantic_quadrant: List[float],
         content_snippet: str,
         author_cluster: str,
+        document_ids: Optional[List[str]] = None,
     ):
         self.trace_id = trace_id
         self.worker_id = worker_id
@@ -59,6 +60,7 @@ class Vote:
         self.semantic_quadrant = semantic_quadrant
         self.content_snippet = content_snippet
         self.author_cluster = author_cluster
+        self.document_ids = document_ids or []
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -72,6 +74,7 @@ class Vote:
             "semantic_quadrant": self.semantic_quadrant,
             "content_snippet": self.content_snippet,
             "author_cluster": self.author_cluster,
+            "document_ids": self.document_ids,
         }
 
 
@@ -192,6 +195,10 @@ class RFIProcessor:
             # For now, use [0.0, 0.0] as active agent will compute from all votes
             quadrant = [0.0, 0.0]
 
+            # Extract document ID from metadata for source tracking
+            document_id = top_result.metadata.get("id") or top_result.metadata.get("doc_id")
+            document_ids = [document_id] if document_id else []
+
             # Create vote
             vote = Vote(
                 trace_id=trace_id,
@@ -203,6 +210,7 @@ class RFIProcessor:
                 semantic_quadrant=quadrant,
                 content_snippet=top_result.content[:500],
                 author_cluster=self.cluster_id,  # Worker is author of this artifact
+                document_ids=document_ids,
             )
 
             votes.append(vote)

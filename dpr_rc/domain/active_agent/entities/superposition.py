@@ -71,11 +71,14 @@ class CollapsedResponse:
             "NEGATIVE_CONSENSUS": 0.40,
         }
 
+        # Use source document IDs instead of content hash
+        sources = artifact.source_document_ids if hasattr(artifact, 'source_document_ids') and artifact.source_document_ids else []
+
         return cls(
             final_answer=artifact.content,
             confidence=confidence_map.get(artifact.tier.value, 0.0),
             status="SUCCESS",
-            sources=[artifact.content_hash],
+            sources=sources,
             superposition=superposition,
         )
 

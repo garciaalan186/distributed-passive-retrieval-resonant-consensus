@@ -196,6 +196,7 @@ class HandleQueryUseCase:
                         binary_vote=v.binary_vote,
                         author_cluster=v.author_cluster,
                         confidence_score=v.confidence_score,
+                        document_ids=v.document_ids or [],
                     )
                 )
 

@@ -71,11 +71,14 @@ class ResponseSynthesizer:
         # Get confidence from tier
         confidence = self.confidence_map.get(best_artifact.tier, 0.0)
 
+        # Use source document IDs instead of content hash
+        sources = best_artifact.source_document_ids if hasattr(best_artifact, 'source_document_ids') and best_artifact.source_document_ids else []
+
         # Create response
         return CollapsedResponse(
             final_answer=best_artifact.content,
             confidence=confidence,
             status="SUCCESS",
-            sources=[best_artifact.content_hash],
+            sources=sources,
             superposition=superposition,
         )

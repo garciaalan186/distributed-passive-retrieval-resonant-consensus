@@ -32,6 +32,12 @@ class ArtifactConsensus:
     tier: ConsensusTier  # Classification per RCP v4 Eq. 4
     score: float  # Artifact score per RCP v4 Eq. 5
     semantic_quadrant: List[float]  # [v+, v-] coordinates
+    source_document_ids: List[str] = None  # Source document IDs for provenance
+
+    def __post_init__(self):
+        """Ensure source_document_ids is initialized."""
+        if self.source_document_ids is None:
+            self.source_document_ids = []
 
     def to_dict(self) -> Dict:
         """Convert to dictionary for serialization."""
@@ -44,6 +50,7 @@ class ArtifactConsensus:
             "tier": self.tier.value,
             "score": self.score,
             "semantic_quadrant": self.semantic_quadrant,
+            "source_document_ids": self.source_document_ids,
         }
 
 

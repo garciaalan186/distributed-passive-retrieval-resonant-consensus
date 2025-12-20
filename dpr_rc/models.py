@@ -40,6 +40,7 @@ class ConsensusVote(BaseModel):
     semantic_quadrant: List[float]  # RCP v4: [v+, v-] = approval rates from each cluster
     content_snippet: str
     author_cluster: Optional[str] = None  # RCP v4: Cluster of the artifact author
+    document_ids: Optional[List[str]] = None  # Source document IDs for provenance tracking
 
 class RetrievalResult(BaseModel):
     trace_id: str
