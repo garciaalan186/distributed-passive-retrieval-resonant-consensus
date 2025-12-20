@@ -18,6 +18,9 @@ RUN python -c "from transformers import AutoModelForCausalLM, AutoTokenizer; \
     print('Pre-downloading Qwen2-0.5B-Instruct model...'); \
     AutoTokenizer.from_pretrained('Qwen/Qwen2-0.5B-Instruct', trust_remote_code=True); \
     AutoModelForCausalLM.from_pretrained('Qwen/Qwen2-0.5B-Instruct', torch_dtype='auto', trust_remote_code=True); \
+    from sentence_transformers import SentenceTransformer; \
+    print('Pre-downloading all-MiniLM-L6-v2 embedding model...'); \
+    SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2'); \
     print('Model pre-download complete')"
 
 # Copy application code
