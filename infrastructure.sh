@@ -35,6 +35,23 @@ gsutil uniformbucketlevelaccess set on gs://${BUCKET_NAME} || echo "Setting UBLA
 gsutil mb -l $REGION gs://${HISTORY_BUCKET_NAME} || echo "Bucket ${HISTORY_BUCKET_NAME} may already exist."
 gsutil uniformbucketlevelaccess set on gs://${HISTORY_BUCKET_NAME} || echo "Setting UBLA failed or already set."
 
+# 2.5 Log Sink Setup (Reliability)
+echo "Configuring Cloud Logging Sink..."
+# Sink name
+SINK_NAME="dpr-audit-sink"
+# Create sink to route dpr-* service logs to the audit bucket
+# We use a filter to captures Cloud Run logs for our specific services
+gcloud logging sinks create $SINK_NAME \
+    storage.googleapis.com/${BUCKET_NAME} \
+    --log-filter="resource.type=\"cloud_run_revision\" AND resource.labels.service_name:(\"dpr-active-controller\" OR \"dpr-passive-worker\" OR \"dpr-slm-service\")" \
+    --description="DPR-RC Audit Trail" \
+    || echo "Sink $SINK_NAME may already exist."
+
+# Grant the Sink's writer identity access to the bucket
+SINK_IDENTITY=$(gcloud logging sinks describe $SINK_NAME --format="value(writerIdentity)")
+echo "Granting access to sink identity: $SINK_IDENTITY"
+gsutil iam ch "${SINK_IDENTITY}:objectCreator" gs://${BUCKET_NAME} || echo "IAM binding failed (check permissions)"
+
 # 3. Redis Setup (Messages & State)
 # NOTE: Redis and VPC Connector are SKIPPED for HTTP mode deployment
 # The system uses direct HTTP calls between Active Controller and Workers

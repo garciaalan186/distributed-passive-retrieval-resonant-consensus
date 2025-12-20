@@ -124,7 +124,7 @@ steps:
       - '${BENCHMARK_SCALE}'
       - '--model'
       - '${EMBEDDING_MODEL}'
-      - '--force'
+      # Removed --force to allow caching
     env:
       - 'HISTORY_BUCKET=${HISTORY_BUCKET}'
       - 'TOKENIZERS_PARALLELISM=false'
