@@ -223,7 +223,7 @@ else
     MAX_WAIT=300
     ELAPSED=0
     while [ $ELAPSED -lt $MAX_WAIT ]; do
-        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${SLM_SERVICE_URL}/ready" 2>/dev/null || echo "000")
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${SLM_SERVICE_URL}/readiness" 2>/dev/null || echo "000")
         if [ "$HTTP_CODE" = "200" ]; then
             echo "✓ SLM service is ready"
             break
