@@ -1,6 +1,10 @@
 #!/bin/bash
 if [ "$ROLE" = "active" ]; then
     echo "Starting Active Agent Controller..."
+    # Ingest foveated index for routing
+    echo "Running Foveated Index Ingestion..."
+    python scripts/ingest_foveated_index.py --scale ${BENCHMARK_SCALE:-medium}
+    
     exec uvicorn dpr_rc.active_agent:app --host 0.0.0.0 --port ${PORT:-8080}
 elif [ "$ROLE" = "passive" ]; then
     echo "Starting Passive Agent Worker..."
