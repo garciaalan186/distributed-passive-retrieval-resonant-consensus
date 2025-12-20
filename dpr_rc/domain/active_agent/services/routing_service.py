@@ -4,30 +4,46 @@ Domain Service: Routing Service
 L1 time-sharded routing logic with tempo-normalized sharding and causal awareness.
 """
 
+import os
+import re
 from typing import List, Dict, Optional
+from dataclasses import dataclass
+
+
+@dataclass
+class ShardInfo:
+    """Information about a tempo-normalized shard."""
+    shard_id: str
+    start_date: str  # YYYY-MM format
+    end_date: str    # YYYY-MM format
 
 
 class RoutingService:
     """
     Domain service for L1 routing decisions.
 
-    Determines target shards based on temporal context.
+    Determines target shards based on temporal context using tempo-normalized
+    shard naming convention: shard_{id}_{start_YYYY-MM}_{end_YYYY-MM}
     """
 
     def __init__(
         self,
         manifest: Optional[Dict] = None,
         causal_index: Optional[Dict] = None,
+        shard_discovery_callback: Optional[callable] = None,
     ):
         """
         Initialize routing service.
 
         Args:
-            manifest: Shard manifest with time ranges
-            causal_index: Causal dependency index
+            manifest: Shard manifest with time ranges (optional, for future use)
+            causal_index: Causal dependency index (optional)
+            shard_discovery_callback: Function to discover available shards from GCS
         """
         self.manifest = manifest
         self.causal_index = causal_index
+        self.shard_discovery_callback = shard_discovery_callback
+        self._shard_cache: Optional[List[ShardInfo]] = None
 
     def get_target_shards(
         self, timestamp_context: Optional[str] = None
@@ -35,63 +51,110 @@ class RoutingService:
         """
         Determine target shards based on timestamp context.
 
-        Enhanced routing:
-        1. Query manifest to find primary shard(s) for timestamp
-        2. Expand to include causal ancestor shards (up to depth 2)
-        3. Fallback to legacy year-based routing if indices unavailable
+        Routing strategy:
+        1. Parse tempo-normalized shard names from available shards
+        2. Find shards whose date range contains the timestamp
+        3. Return matching shard IDs (without file extension)
 
         Args:
-            timestamp_context: ISO timestamp or None
+            timestamp_context: ISO timestamp (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)
 
         Returns:
-            List of shard IDs to query
+            List of shard IDs to query (e.g., ["shard_000_2015-01_2021-12"])
         """
         if not timestamp_context:
             return ["broadcast"]
 
-        # Use tempo-normalized routing if manifest available
-        if self.manifest and "shards" in self.manifest:
-            return self._get_tempo_normalized_shards(timestamp_context)
-
-        # Fallback to legacy year-based routing
-        year = timestamp_context[:4]
-        return [f"shard_{year}"]
+        # Use tempo-normalized routing with dynamic shard discovery
+        return self._get_tempo_normalized_shards(timestamp_context)
 
     def _get_tempo_normalized_shards(self, timestamp: str) -> List[str]:
         """
-        Get tempo-normalized shards for timestamp with causal expansion.
+        Get tempo-normalized shards for timestamp.
+
+        Discovers available shards and matches them to the timestamp.
 
         Args:
-            timestamp: ISO timestamp
+            timestamp: ISO timestamp (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)
 
         Returns:
-            List of shard IDs (primary + causal ancestors)
+            List of shard IDs matching the timestamp
         """
-        primary_shards = []
+        # Discover available shards
+        available_shards = self._discover_shards()
 
-        # Find shards containing this timestamp
-        for shard in self.manifest.get("shards", []):
-            time_range = shard.get("time_range", {})
-            start = time_range.get("start", "")
-            end = time_range.get("end", "")
-
-            if start <= timestamp <= end:
-                primary_shards.append(shard.get("id", ""))
-
-        if not primary_shards:
-            # No shard found, fallback
+        if not available_shards:
+            # No shards discovered, fallback to broadcast
             return ["broadcast"]
 
-        # Expand to include causal ancestors
-        if self.causal_index and "shard_ancestry" in self.causal_index:
-            expanded_shards = set(primary_shards)
+        # Extract YYYY-MM from timestamp for comparison
+        query_date = timestamp[:7]  # "2015-12-31" -> "2015-12"
 
-            for shard_id in primary_shards:
-                ancestry = self.causal_index["shard_ancestry"].get(shard_id, {})
-                # Include direct ancestors (depth 1)
-                direct_ancestors = ancestry.get("direct_ancestors", [])
-                expanded_shards.update(direct_ancestors[:3])  # Limit to top 3
+        # Find shards containing this timestamp
+        matching_shards = []
+        for shard in available_shards:
+            if shard.start_date <= query_date <= shard.end_date:
+                matching_shards.append(shard.shard_id)
 
-            return sorted(list(expanded_shards))
+        if not matching_shards:
+            # No exact match, return broadcast
+            return ["broadcast"]
 
-        return primary_shards
+        return sorted(matching_shards)
+
+    def _discover_shards(self) -> List[ShardInfo]:
+        """
+        Discover available tempo-normalized shards.
+
+        Uses callback if provided, otherwise returns cached results.
+
+        Returns:
+            List of ShardInfo objects
+        """
+        # Return cached shards if available
+        if self._shard_cache is not None:
+            return self._shard_cache
+
+        # Use discovery callback if provided
+        if self.shard_discovery_callback:
+            shard_names = self.shard_discovery_callback()
+            self._shard_cache = self._parse_shard_names(shard_names)
+            return self._shard_cache
+
+        # No discovery mechanism available
+        return []
+
+    def _parse_shard_names(self, shard_names: List[str]) -> List[ShardInfo]:
+        """
+        Parse tempo-normalized shard names.
+
+        Expected format: shard_{id}_{start_YYYY-MM}_{end_YYYY-MM}.{ext}
+        Example: shard_000_2015-01_2021-12.json
+
+        Args:
+            shard_names: List of shard filenames or paths
+
+        Returns:
+            List of ShardInfo objects
+        """
+        shard_pattern = re.compile(
+            r'shard_(\d+)_(\d{4}-\d{2})_(\d{4}-\d{2})'
+        )
+
+        shards = []
+        for name in shard_names:
+            # Extract filename from path if necessary
+            filename = os.path.basename(name)
+
+            match = shard_pattern.search(filename)
+            if match:
+                shard_id_num, start_date, end_date = match.groups()
+                # Construct shard_id without extension
+                shard_id = f"shard_{shard_id_num}_{start_date}_{end_date}"
+                shards.append(ShardInfo(
+                    shard_id=shard_id,
+                    start_date=start_date,
+                    end_date=end_date
+                ))
+
+        return shards

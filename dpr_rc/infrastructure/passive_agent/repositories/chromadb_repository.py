@@ -46,7 +46,7 @@ class ChromaDBRepository:
         Create or get a vector collection for a shard.
 
         Args:
-            shard_id: Identifier like "shard_2020"
+            shard_id: Tempo-normalized identifier like "shard_000_2015-01_2021-12"
 
         Returns:
             ChromaDB collection object
