@@ -73,6 +73,6 @@ class LoggerAdapter:
         self.logger.log_event(
             trace_id=trace_id,
             event_type=event_enum,
-            event_data=data,
+            payload=data,
             metrics=metrics or {},
         )
