@@ -23,6 +23,7 @@ RUN python -c "from transformers import AutoModelForCausalLM, AutoTokenizer; \
 # Copy application code
 COPY dpr_rc/ /app/dpr_rc/
 COPY benchmark/ /app/benchmark/
+COPY scripts/ /app/scripts/
 
 # Set env vars
 ENV PYTHONUNBUFFERED=1

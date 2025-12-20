@@ -11,10 +11,6 @@ from dpr_rc.domain.active_agent.services import (
     RoutingService,
     ConsensusCalculator,
     ResponseSynthesizer,
-from dpr_rc.domain.active_agent.services import (
-    RoutingService,
-    ConsensusCalculator,
-    ResponseSynthesizer,
     Vote,
     FoveatedRouter
 )
