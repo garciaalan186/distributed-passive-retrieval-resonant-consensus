@@ -6,8 +6,11 @@ L1 time-sharded routing logic with tempo-normalized sharding and causal awarenes
 
 import os
 import re
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
+
+# Type alias for TimeRange
+TimeRange = Tuple[str, str]
 
 
 @dataclass
@@ -46,7 +49,9 @@ class RoutingService:
         self._shard_cache: Optional[List[ShardInfo]] = None
 
     def get_target_shards(
-        self, timestamp_context: Optional[str] = None
+        self, 
+        timestamp_context: Optional[str] = None,
+        restrict_to_ranges: Optional[List[TimeRange]] = None
     ) -> List[str]:
         """
         Determine target shards based on timestamp context.
@@ -58,6 +63,9 @@ class RoutingService:
 
         Args:
             timestamp_context: ISO timestamp (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)
+            restrict_to_ranges: Optional list of (start, end) tuples to restrict search.
+                                If provided, only shards overlapping these ranges AND matches
+                                the timestamp (if present) are returned.
 
         Returns:
             List of shard IDs to query (e.g., ["shard_000_2015-01_2021-12"])
@@ -66,9 +74,13 @@ class RoutingService:
             return ["broadcast"]
 
         # Use tempo-normalized routing with dynamic shard discovery
-        return self._get_tempo_normalized_shards(timestamp_context)
+        return self._get_tempo_normalized_shards(timestamp_context, restrict_to_ranges)
 
-    def _get_tempo_normalized_shards(self, timestamp: str) -> List[str]:
+    def _get_tempo_normalized_shards(
+        self, 
+        timestamp: Optional[str],
+        restrict_to_ranges: Optional[List[TimeRange]] = None
+    ) -> List[str]:
         """
         Get tempo-normalized shards for timestamp.
 
@@ -87,13 +99,28 @@ class RoutingService:
             # No shards discovered, fallback to broadcast
             return ["broadcast"]
 
-        # Extract YYYY-MM from timestamp for comparison
-        query_date = timestamp[:7]  # "2015-12-31" -> "2015-12"
+        # Extract YYYY-MM from timestamp for comparison if present
+        query_date = timestamp[:7] if timestamp else None
 
         # Find shards containing this timestamp
         matching_shards = []
         for shard in available_shards:
-            if shard.start_date <= query_date <= shard.end_date:
+            # Check specific timestamp match if provided
+            timestamp_match = True
+            if query_date:
+                timestamp_match = (shard.start_date <= query_date <= shard.end_date)
+            
+            # Check range restriction if provided
+            range_match = True
+            if restrict_to_ranges:
+                range_match = False
+                for r_start, r_end in restrict_to_ranges:
+                    # Check overlap: shard_start <= range_end AND shard_end >= range_start
+                    if shard.start_date <= r_end and shard.end_date >= r_start:
+                        range_match = True
+                        break
+
+            if timestamp_match and range_match:
                 matching_shards.append(shard.shard_id)
 
         if not matching_shards:

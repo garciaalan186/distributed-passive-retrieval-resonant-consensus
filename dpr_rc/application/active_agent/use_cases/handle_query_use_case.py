@@ -11,7 +11,12 @@ from dpr_rc.domain.active_agent.services import (
     RoutingService,
     ConsensusCalculator,
     ResponseSynthesizer,
+from dpr_rc.domain.active_agent.services import (
+    RoutingService,
+    ConsensusCalculator,
+    ResponseSynthesizer,
     Vote,
+    FoveatedRouter
 )
 from dpr_rc.domain.active_agent.entities import SuperpositionState
 
@@ -73,6 +78,7 @@ class HandleQueryUseCase:
         query_enhancer: IQueryEnhancer,
         worker_communicator: IWorkerCommunicator,
         logger: ILogger,
+        foveated_router: Optional[FoveatedRouter] = None,
         enable_query_enhancement: bool = True,
         min_votes: int = 1,
     ):
@@ -86,6 +92,7 @@ class HandleQueryUseCase:
             query_enhancer: Client for query enhancement
             worker_communicator: Client for worker communication
             logger: Logger for audit trail
+            foveated_router: Service for semantic routing (optional)
             enable_query_enhancement: Whether to enhance queries
             min_votes: Minimum votes needed for consensus
         """
@@ -95,6 +102,7 @@ class HandleQueryUseCase:
         self.query_enhancer = query_enhancer
         self.worker_communicator = worker_communicator
         self.logger = logger
+        self.foveated_router = foveated_router
         self.enable_query_enhancement = enable_query_enhancement
         self.min_votes = min_votes
 
@@ -148,8 +156,21 @@ class HandleQueryUseCase:
             )
 
         # Step 2: L1 Routing
+        
+        # Apply Foveated Routing if enabled to restrict search space
+        restrict_ranges = None
+        if self.foveated_router:
+            restrict_ranges = self.foveated_router.get_semantic_time_ranges(enhanced_query)
+            if restrict_ranges:
+                self.logger.log_event(
+                    trace_id=request.trace_id,
+                    event_type="FOVEATED_ROUTING",
+                    data={"ranges": restrict_ranges}
+                )
+
         target_shards = self.routing_service.get_target_shards(
-            request.timestamp_context
+            timestamp_context=request.timestamp_context,
+            restrict_to_ranges=restrict_ranges
         )
 
         # Step 3: Gather Votes

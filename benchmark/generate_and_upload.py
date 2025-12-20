@@ -433,7 +433,7 @@ def _embed_single_shard(args: Tuple[str, List[Dict], str, str, str]) -> Tuple[st
         embeddings = _compute_embeddings(texts, model_id)
 
         # Save locally
-        local_npz = embeddings_dir / f"shard_{year}.npz"
+        local_npz = embeddings_dir / f"{year}.npz"
         _save_embeddings_npz(
             embeddings=embeddings,
             doc_ids=doc_ids,
@@ -444,7 +444,7 @@ def _embed_single_shard(args: Tuple[str, List[Dict], str, str, str]) -> Tuple[st
         )
 
         # Upload to GCS
-        gcs_path = f"embeddings/{model_folder}/{scale}/shards/shard_{year}.npz"
+        gcs_path = f"embeddings/{model_folder}/{scale}/shards/{year}.npz"
 
         # Get GCS client inside worker
         from google.cloud import storage as gcs_storage
@@ -453,10 +453,10 @@ def _embed_single_shard(args: Tuple[str, List[Dict], str, str, str]) -> Tuple[st
         blob = bucket.blob(gcs_path)
         blob.upload_from_filename(str(local_npz))
 
-        return (year, True, f"shard_{year}: {len(events)} events embedded")
+        return (year, True, f"{year}: {len(events)} events embedded")
 
     except Exception as e:
-        return (year, False, f"shard_{year}: Error - {str(e)}")
+        return (year, False, f"{year}: Error - {str(e)}")
 
 
 def compute_and_upload_embeddings(
@@ -537,7 +537,7 @@ def compute_and_upload_embeddings(
             embeddings = compute_embeddings(texts, model_id)
 
             # Save locally
-            local_npz = embeddings_dir / f"shard_{year}.npz"
+            local_npz = embeddings_dir / f"{year}.npz"
             save_embeddings_npz(
                 embeddings=embeddings,
                 doc_ids=doc_ids,
@@ -548,7 +548,7 @@ def compute_and_upload_embeddings(
             )
 
             # Upload to GCS
-            gcs_path = f"embeddings/{model_folder}/{scale}/shards/shard_{year}.npz"
+            gcs_path = f"embeddings/{model_folder}/{scale}/shards/{year}.npz"
             upload_to_gcs(local_npz, gcs_path)
 
     print(f"  Embeddings complete for {len(events_by_year)} shards")

@@ -25,10 +25,12 @@ gcloud run deploy dpr-slm-service \
     --image="${IMAGE_URI}" \
     --region="${REGION}" \
     --set-env-vars="ROLE=slm,SLM_MODEL=Qwen/Qwen2-0.5B-Instruct" \
-    --memory=8Gi \
+    --memory=16Gi \
     --cpu=4 \
-    --gpu=1 \
-    --gpu-type=nvidia-l4 \
+    --gpu 1 \
+    --gpu-type nvidia-l4 \
+    --no-cpu-throttling \
+    --no-gpu-zonal-redundancy \
     --timeout=300 \
     --min-instances=1 \
     --allow-unauthenticated \

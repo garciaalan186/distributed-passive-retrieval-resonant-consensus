@@ -17,7 +17,7 @@ sentence-transformers==2.3.1
 # SLM (Small Language Model) for L2 verification
 # transformers>=4.37.0 required for Qwen2 model support
 transformers==4.46.0
-accelerate==0.25.0
+accelerate>=0.26.0
 
 # Pin huggingface_hub to ensure compatibility with transformers
 huggingface_hub>=0.20.0,<0.27.0

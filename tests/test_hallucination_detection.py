@@ -484,14 +484,24 @@ def test_compare_results_uses_hallucination_detection(benchmark_suite, sample_gl
         }
     ]
 
-    with patch.object(benchmark_suite, 'detect_hallucination_via_slm') as mock_detect:
-        mock_detect.return_value = {
-            "has_hallucination": False,
-            "hallucination_type": None,
-            "explanation": "All valid",
-            "severity": "none",
-            "flagged_content": []
-        }
+    # Now using batch detection - mock the batch method instead
+    with patch.object(benchmark_suite, 'batch_detect_hallucination_via_slm') as mock_batch:
+        mock_batch.return_value = [
+            {
+                "has_hallucination": False,
+                "hallucination_type": None,
+                "explanation": "All valid",
+                "severity": "none",
+                "flagged_content": []
+            },
+            {
+                "has_hallucination": False,
+                "hallucination_type": None,
+                "explanation": "All valid",
+                "severity": "none",
+                "flagged_content": []
+            }
+        ]
 
         result = benchmark_suite.compare_results(
             queries=queries,
@@ -500,10 +510,227 @@ def test_compare_results_uses_hallucination_detection(benchmark_suite, sample_gl
             glossary=sample_glossary
         )
 
-        # Should have called detection for both DPR-RC and baseline
-        assert mock_detect.call_count == 2
+        # Should have called batch detection once (not 2 individual calls)
+        assert mock_batch.call_count == 1
+        # Batch should have received 2 requests (1 dprrc + 1 baseline)
+        call_args = mock_batch.call_args[0][0]
+        assert len(call_args) == 2
         assert result["dprrc_hallucination_count"] == 0
         assert result["baseline_hallucination_count"] == 0
+
+
+# =============================================================================
+# BATCH HALLUCINATION DETECTION TESTS
+# =============================================================================
+
+def test_batch_hallucination_detection(benchmark_suite, sample_glossary, sample_ground_truth):
+    """Test batch hallucination detection with multiple requests"""
+    with patch('requests.post') as mock_post:
+        # Mock batch response
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "results": [
+                {
+                    "trace_id": "query_001",
+                    "has_hallucination": False,
+                    "hallucination_type": None,
+                    "explanation": "All valid",
+                    "severity": "none",
+                    "flagged_content": []
+                },
+                {
+                    "trace_id": "query_002",
+                    "has_hallucination": True,
+                    "hallucination_type": "invalid_term",
+                    "explanation": "FakeTerm not in glossary",
+                    "severity": "high",
+                    "flagged_content": ["FakeTerm"]
+                }
+            ],
+            "model_id": "Qwen/Qwen2-0.5B-Instruct",
+            "batch_size": 2
+        }
+        mock_post.return_value = mock_response
+
+        # Create batch requests
+        check_requests = [
+            {
+                "query": "What is Blarkon?",
+                "system_response": "Blarkon is stable",
+                "ground_truth": sample_ground_truth,
+                "valid_terms": ["Blarkon", "Zorptex"],
+                "confidence": 0.8,
+                "trace_id": "query_001"
+            },
+            {
+                "query": "What is FakeTerm?",
+                "system_response": "FakeTerm causes quantum effects",
+                "ground_truth": sample_ground_truth,
+                "valid_terms": ["Blarkon", "Zorptex"],
+                "confidence": 0.9,
+                "trace_id": "query_002"
+            }
+        ]
+
+        results = benchmark_suite.batch_detect_hallucination_via_slm(check_requests)
+
+        # Verify single batch call was made
+        assert mock_post.call_count == 1
+
+        # Verify results
+        assert len(results) == 2
+        assert results[0]["has_hallucination"] == False
+        assert results[1]["has_hallucination"] == True
+        assert "FakeTerm" in results[1]["flagged_content"]
+
+
+def test_batch_hallucination_empty_requests(benchmark_suite):
+    """Test batch detection with empty request list"""
+    results = benchmark_suite.batch_detect_hallucination_via_slm([])
+    assert results == []
+
+
+def test_batch_hallucination_fallback_on_error(benchmark_suite, sample_glossary):
+    """Test that batch detection falls back to rule-based on error"""
+    with patch('requests.post') as mock_post:
+        # Mock HTTP error
+        mock_post.side_effect = Exception("Network error")
+
+        check_requests = [
+            {
+                "query": "Test",
+                "system_response": "FakeTerm is real",
+                "ground_truth": {},
+                "valid_terms": ["Blarkon"],
+                "confidence": 0.9,
+                "trace_id": "query_001"
+            }
+        ]
+
+        results = benchmark_suite.batch_detect_hallucination_via_slm(check_requests)
+
+        # Should get fallback results
+        assert len(results) == 1
+        assert "has_hallucination" in results[0]
+
+
+def test_batch_hallucination_no_slm_url(benchmark_suite):
+    """Test batch detection when SLM URL is not configured"""
+    benchmark_suite.slm_service_url = None
+
+    check_requests = [
+        {
+            "query": "Test",
+            "system_response": "Valid response",
+            "ground_truth": {},
+            "valid_terms": ["Valid"],
+            "confidence": 0.8,
+            "trace_id": "query_001"
+        }
+    ]
+
+    results = benchmark_suite.batch_detect_hallucination_via_slm(check_requests)
+
+    # Should use fallback without attempting HTTP call
+    assert len(results) == 1
+    assert "has_hallucination" in results[0]
+
+
+def test_compare_results_uses_batch_detection(benchmark_suite, sample_glossary):
+    """Test that compare_results uses batch hallucination detection"""
+    queries = [
+        {
+            "question": "What is Blarkon?",
+            "expected_consensus": ["Blarkon stable"],
+            "expected_disputed": []
+        },
+        {
+            "question": "What is Zorptex?",
+            "expected_consensus": ["Zorptex unstable"],
+            "expected_disputed": []
+        }
+    ]
+
+    dprrc_results = [
+        {
+            "success": True,
+            "response": "Blarkon is stable",
+            "confidence": 0.8,
+            "latency_ms": 100,
+            "query_id": "dprrc_001"
+        },
+        {
+            "success": True,
+            "response": "Zorptex is unstable",
+            "confidence": 0.9,
+            "latency_ms": 120,
+            "query_id": "dprrc_002"
+        }
+    ]
+
+    baseline_results = [
+        {
+            "success": True,
+            "response": "Blarkon is stable",
+            "confidence": 1.0,
+            "latency_ms": 50,
+            "query_id": "baseline_001"
+        },
+        {
+            "success": True,
+            "response": "Zorptex is unstable",
+            "confidence": 1.0,
+            "latency_ms": 60,
+            "query_id": "baseline_002"
+        }
+    ]
+
+    with patch.object(benchmark_suite, 'batch_detect_hallucination_via_slm') as mock_batch:
+        mock_batch.return_value = [
+            {
+                "has_hallucination": False,
+                "hallucination_type": None,
+                "explanation": "Valid",
+                "severity": "none",
+                "flagged_content": []
+            },
+            {
+                "has_hallucination": False,
+                "hallucination_type": None,
+                "explanation": "Valid",
+                "severity": "none",
+                "flagged_content": []
+            },
+            {
+                "has_hallucination": False,
+                "hallucination_type": None,
+                "explanation": "Valid",
+                "severity": "none",
+                "flagged_content": []
+            },
+            {
+                "has_hallucination": False,
+                "hallucination_type": None,
+                "explanation": "Valid",
+                "severity": "none",
+                "flagged_content": []
+            }
+        ]
+
+        result = benchmark_suite.compare_results(
+            queries=queries,
+            dprrc_results=dprrc_results,
+            baseline_results=baseline_results,
+            glossary=sample_glossary
+        )
+
+        # Should have called batch detection once (not 4 individual calls)
+        assert mock_batch.call_count == 1
+
+        # Verify the batch request included all 4 checks (2 dprrc + 2 baseline)
+        call_args = mock_batch.call_args[0][0]
+        assert len(call_args) == 4
 
 
 if __name__ == "__main__":
