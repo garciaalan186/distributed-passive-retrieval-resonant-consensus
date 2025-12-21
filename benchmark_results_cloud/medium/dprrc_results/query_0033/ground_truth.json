@@ -1,0 +1,28 @@
+{
+  "expected_consensus": [
+    "8d81b7b99220",
+    "099735054a38",
+    "86792792665f",
+    "b764fe05afc0",
+    "a6ddd255c263",
+    "a496b78f3137",
+    "c4eb1b2beba6",
+    "635077ea9dd7",
+    "31ee4ba7b0e9",
+    "7e2cbb5a8b27",
+    "9e0d106c5e7f"
+  ],
+  "expected_disputed": [
+    {
+      "claim_id": "5a5006da7f01",
+      "perspective_views": {
+        "optimist": "Binper Zirskrafstreith will achieve Koungthoun milestone by 2022 [optimist: ahead of schedule, Bausfeent trending positive]",
+        "skeptic": "Binper Zirskrafstreith will achieve Koungthoun milestone by 2022 [skeptic: delayed by Koungthoun limitations]",
+        "methodologist": "Binper Zirskrafstreith will achieve Koungthoun milestone by 2022 [methodologist: contingent on Mor standardization]",
+        "theorist": "Binper Zirskrafstreith will achieve Koungthoun milestone by 2022 [theorist: depends on Swichglounstranthim theoretical advances]",
+        "empiricist": "Binper Zirskrafstreith will achieve Koungthoun milestone by 2022 [empiricist: based on current Breerm extrapolation]"
+      }
+    }
+  ],
+  "expected_sources": []
+}

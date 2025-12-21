@@ -46,7 +46,7 @@ class Vote:
         content_hash: str,
         confidence_score: float,
         binary_vote: int,
-        semantic_quadrant: List[float],
+        resonance_vector: List[float],
         content_snippet: str,
         author_cluster: str,
         document_ids: Optional[List[str]] = None,
@@ -57,7 +57,7 @@ class Vote:
         self.content_hash = content_hash
         self.confidence_score = confidence_score
         self.binary_vote = binary_vote
-        self.semantic_quadrant = semantic_quadrant
+        self.resonance_vector = resonance_vector
         self.content_snippet = content_snippet
         self.author_cluster = author_cluster
         self.document_ids = document_ids or []
@@ -71,7 +71,7 @@ class Vote:
             "content_hash": self.content_hash,
             "confidence_score": self.confidence_score,
             "binary_vote": self.binary_vote,
-            "semantic_quadrant": self.semantic_quadrant,
+            "resonance_vector": self.resonance_vector,
             "content_snippet": self.content_snippet,
             "author_cluster": self.author_cluster,
             "document_ids": self.document_ids,
@@ -85,7 +85,7 @@ class RFIProcessor:
     Orchestrates the main pipeline:
     1. Retrieve documents from embedding repository
     2. Verify using SLM
-    3. Calculate semantic quadrant
+    3. Calculate resonance vector
     4. Create consensus vote
     """
 
@@ -184,9 +184,9 @@ class RFIProcessor:
                 # Hash content for deduplication
                 content_hash = self._hash_content(top_result.content)
 
-                # RCP v4: Semantic quadrant (placeholder - active agent recalculates)
+                # RCP v4: Resonance vector (placeholder - active agent recalculates)
                 # For now, use [0.0, 0.0] as active agent will compute from all votes
-                quadrant = [0.0, 0.0]
+                vector = [0.0, 0.0]
 
                 # Extract document ID from metadata for source tracking
                 document_id = top_result.metadata.get("id") or top_result.metadata.get("doc_id")
@@ -200,7 +200,7 @@ class RFIProcessor:
                     content_hash=content_hash,
                     confidence_score=adjusted_confidence,
                     binary_vote=binary_vote,
-                    semantic_quadrant=quadrant,
+                    resonance_vector=vector,
                     content_snippet=top_result.content[:500],
                     author_cluster=self.cluster_id,  # Worker is author of this artifact
                     document_ids=document_ids,

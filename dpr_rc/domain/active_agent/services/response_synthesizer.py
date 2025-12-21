@@ -6,7 +6,8 @@ Collapses superposition to final response with confidence scoring.
 
 from ..entities import (
     ConsensusResult,
-    SuperpositionState,
+    ConsensusResult,
+    ResonanceMatrix,
     CollapsedResponse,
     ConsensusTier,
 )
@@ -44,7 +45,7 @@ class ResponseSynthesizer:
         Collapse superposition to final response.
 
         Strategy:
-        1. Create superposition state from all artifacts
+        1. Create resonance matrix from all artifacts
         2. If consensus exists, use best consensus artifact
         3. Otherwise use best polar or negative consensus
         4. Map tier to confidence level
@@ -55,18 +56,18 @@ class ResponseSynthesizer:
         Returns:
             CollapsedResponse with final answer and confidence
         """
-        # Create superposition
-        superposition = SuperpositionState.from_consensus_result(consensus_result)
+        # Create resonance matrix
+        resonance_matrix = ResonanceMatrix.from_consensus_result(consensus_result)
 
         # Check if we have any results
         if not consensus_result.has_any_results():
-            return CollapsedResponse.no_consensus(superposition)
+            return CollapsedResponse.no_consensus(resonance_matrix)
 
         # Get best artifact (consensus > polar > negative consensus)
         try:
             best_artifact = consensus_result.get_best_artifact()
         except ValueError:
-            return CollapsedResponse.no_consensus(superposition)
+            return CollapsedResponse.no_consensus(resonance_matrix)
 
         # Get confidence from tier
         confidence = self.confidence_map.get(best_artifact.tier, 0.0)
@@ -80,5 +81,5 @@ class ResponseSynthesizer:
             confidence=confidence,
             status="SUCCESS",
             sources=sources,
-            superposition=superposition,
+            resonance_matrix=resonance_matrix,
         )

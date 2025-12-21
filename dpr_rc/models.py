@@ -37,7 +37,7 @@ class ConsensusVote(BaseModel):
     content_hash: str
     confidence_score: float  # Continuous score for internal use
     binary_vote: int  # RCP v4: Binary vote {0, 1} based on threshold θ
-    semantic_quadrant: List[float]  # RCP v4: [v+, v-] = approval rates from each cluster
+    resonance_vector: List[float]  # RCP v4: [v+, v-] = approval rates from each cluster
     content_snippet: str
     author_cluster: Optional[str] = None  # RCP v4: Cluster of the artifact author
     document_ids: Optional[List[str]] = None  # Source document IDs for provenance tracking
@@ -48,7 +48,7 @@ class RetrievalResult(BaseModel):
     confidence: Optional[float] = None  # A* determines confidence
     status: str
     sources: List[str]
-    superposition: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    resonance_matrix: Optional[Dict[str, Any]] = Field(default_factory=dict)
 
     model_config = {"exclude_none": False}
 

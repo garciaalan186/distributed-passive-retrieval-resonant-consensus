@@ -14,7 +14,7 @@ from dpr_rc.domain.active_agent.services import (
     Vote,
     FoveatedRouter
 )
-from dpr_rc.domain.active_agent.entities import SuperpositionState
+from dpr_rc.domain.active_agent.entities import ResonanceMatrix
 
 
 class IQueryEnhancer(Protocol):
@@ -192,7 +192,7 @@ class HandleQueryUseCase:
                 confidence=0.0,
                 status="FAILED",
                 sources=[],
-                superposition={
+                resonance_matrix={
                     "consensus": [],
                     "polar": [],
                     "negative_consensus": [],
@@ -240,5 +240,5 @@ class HandleQueryUseCase:
             confidence=collapsed_response.confidence,
             status=collapsed_response.status,
             sources=collapsed_response.sources,
-            superposition=collapsed_response.superposition.to_dict(),
+            resonance_matrix=collapsed_response.resonance_matrix.to_dict(),
         )

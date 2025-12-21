@@ -31,7 +31,7 @@ class ArtifactConsensus:
     agreement_ratio: float  # ρ(ω) per RCP v4 Eq. 3
     tier: ConsensusTier  # Classification per RCP v4 Eq. 4
     score: float  # Artifact score per RCP v4 Eq. 5
-    semantic_quadrant: List[float]  # [v+, v-] coordinates
+    resonance_vector: List[float]  # [v+, v-] coordinates
     source_document_ids: List[str] = None  # Source document IDs for provenance
 
     def __post_init__(self):
@@ -49,7 +49,7 @@ class ArtifactConsensus:
             "agreement_ratio": self.agreement_ratio,
             "tier": self.tier.value,
             "score": self.score,
-            "semantic_quadrant": self.semantic_quadrant,
+            "resonance_vector": self.resonance_vector,
             "source_document_ids": self.source_document_ids,
         }
 

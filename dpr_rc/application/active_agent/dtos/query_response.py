@@ -17,7 +17,8 @@ class QueryResponseDTO:
     confidence: Optional[float]
     status: str
     sources: List[str]
-    superposition: Dict
+    sources: List[str]
+    resonance_matrix: Dict
 
     def to_dict(self) -> Dict:
         """Convert to dictionary for FastAPI response."""
@@ -27,5 +28,5 @@ class QueryResponseDTO:
             "confidence": self.confidence,
             "status": self.status,
             "sources": self.sources,
-            "superposition": self.superposition,
+            "resonance_matrix": self.resonance_matrix,
         }

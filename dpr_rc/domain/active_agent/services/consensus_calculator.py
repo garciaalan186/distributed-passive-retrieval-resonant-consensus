@@ -106,8 +106,8 @@ class ConsensusCalculator:
             # RCP v4 Eq. 5: Compute artifact score
             score = self._compute_artifact_score(artifact_votes)
 
-            # RCP v4: Compute semantic quadrant [v+, v-]
-            semantic_quadrant = self._compute_semantic_quadrant(artifact_votes)
+            # RCP v4: Compute resonance vector [v+, v-]
+            resonance_vector = self._compute_resonance_vector(artifact_votes)
 
             # Aggregate source document IDs from all votes for this artifact
             source_document_ids = []
@@ -126,7 +126,7 @@ class ConsensusCalculator:
                 agreement_ratio=agreement_ratio,
                 tier=tier,
                 score=score,
-                semantic_quadrant=semantic_quadrant,
+                resonance_vector=resonance_vector,
                 source_document_ids=source_document_ids,
             )
 
@@ -239,9 +239,9 @@ class ConsensusCalculator:
         approvals = sum(v.binary_vote for v in non_author_votes)
         return approvals / len(non_author_votes)
 
-    def _compute_semantic_quadrant(self, votes_for_artifact: List) -> List[float]:
+    def _compute_resonance_vector(self, votes_for_artifact: List) -> List[float]:
         """
-        RCP v4: Semantic Quadrant for DPR-RC Temporal Clustering
+        RCP v4: Resonance Vector for DPR-RC Temporal Clustering
 
         Returns [v+, v-] where:
         - v+ = approval rate from C_RECENT cluster

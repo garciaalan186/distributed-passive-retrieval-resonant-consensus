@@ -159,7 +159,7 @@ class DPRRCQueryExecutor(IQueryExecutor):
                 metadata={
                     "status": response.status,
                     "sources": response.sources,
-                    "superposition": response.superposition,
+                    "resonance_matrix": response.resonance_matrix,
                     "trace_id": query_id,
                     "execution_mode": "usecase",
                     **response.metadata
@@ -227,7 +227,7 @@ class DPRRCQueryExecutor(IQueryExecutor):
                             metadata={
                                 "status": data["status"],
                                 "sources": data.get("sources", []),
-                                "superposition": data.get("superposition"),
+                                "resonance_matrix": data.get("resonance_matrix"),
                                 "trace_id": query_id,
                                 "execution_mode": "http"
                             }

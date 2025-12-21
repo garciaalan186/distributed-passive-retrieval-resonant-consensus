@@ -7,12 +7,12 @@ from .consensus_state import (
     ArtifactConsensus,
     ConsensusResult,
 )
-from .superposition import SuperpositionState, CollapsedResponse
+from .resonance_matrix import ResonanceMatrix, CollapsedResponse
 
 __all__ = [
     "ConsensusTier",
     "ArtifactConsensus",
     "ConsensusResult",
-    "SuperpositionState",
+    "ResonanceMatrix",
     "CollapsedResponse",
 ]
