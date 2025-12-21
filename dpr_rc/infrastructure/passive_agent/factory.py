@@ -41,8 +41,6 @@ class PassiveAgentFactory:
         scale: str = "medium",
         embedding_model: str = DEFAULT_EMBEDDING_MODEL,
         redis_client: Optional[redis.Redis] = None,
-        vote_threshold: float = 0.5,
-        confidence_threshold: float = 0.3,
         default_epoch_year: int = 2020,
     ) -> ProcessRFIUseCase:
         """
@@ -103,8 +101,6 @@ class PassiveAgentFactory:
             quadrant_service=quadrant_service,
             worker_id=worker_id,
             cluster_id=cluster_id,
-            vote_threshold=vote_threshold,
-            confidence_threshold=confidence_threshold,
         )
 
         # Application: Use Case
@@ -136,8 +132,6 @@ class PassiveAgentFactory:
         cluster_id = os.getenv("CLUSTER_ID", "cluster-alpha")
         scale = os.getenv("HISTORY_SCALE", "medium")
         embedding_model = os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
-        vote_threshold = float(os.getenv("VOTE_THRESHOLD", "0.5"))
-        confidence_threshold = float(os.getenv("CONFIDENCE_THRESHOLD", "0.3"))
         epoch_year = int(os.getenv("EPOCH_YEAR", "2020"))
 
         # Optional Redis
@@ -162,7 +156,5 @@ class PassiveAgentFactory:
             scale=scale,
             embedding_model=embedding_model,
             redis_client=redis_client,
-            vote_threshold=vote_threshold,
-            confidence_threshold=confidence_threshold,
             default_epoch_year=epoch_year,
         )

@@ -71,7 +71,10 @@ class RoutingService:
             List of shard IDs to query (e.g., ["shard_000_2015-01_2021-12"])
         """
         if not timestamp_context:
-            return ["broadcast"]
+            # If no timestamp, return all available shards (true broadcast)
+            # This ensures Passive Worker receives valid shard IDs
+            available_shards = self._discover_shards()
+            return sorted([s.shard_id for s in available_shards])
 
         # Use tempo-normalized routing with dynamic shard discovery
         return self._get_tempo_normalized_shards(timestamp_context, restrict_to_ranges)
@@ -96,8 +99,8 @@ class RoutingService:
         available_shards = self._discover_shards()
 
         if not available_shards:
-            # No shards discovered, fallback to broadcast
-            return ["broadcast"]
+            # No shards discovered at all
+            return []
 
         # Extract YYYY-MM from timestamp for comparison if present
         query_date = timestamp[:7] if timestamp else None
@@ -124,8 +127,9 @@ class RoutingService:
                 matching_shards.append(shard.shard_id)
 
         if not matching_shards:
-            # No exact match, return broadcast
-            return ["broadcast"]
+            # No exact match, return all shards to be safe (fallback)
+            # Better to search everything than nothing
+            return sorted([s.shard_id for s in available_shards])
 
         return sorted(matching_shards)
 

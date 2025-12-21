@@ -96,8 +96,6 @@ class RFIProcessor:
         quadrant_service: QuadrantService,
         worker_id: str,
         cluster_id: str,
-        vote_threshold: float = 0.5,
-        confidence_threshold: float = 0.3,
     ):
         """
         Initialize RFI processor.
@@ -108,16 +106,12 @@ class RFIProcessor:
             quadrant_service: Service for L3 quadrant calculation
             worker_id: Identifier for this worker
             cluster_id: Cluster this worker belongs to
-            vote_threshold: Threshold for binary vote conversion
-            confidence_threshold: Minimum confidence to cast vote
         """
         self.embedding_repo = embedding_repo
         self.verification_service = verification_service
         self.quadrant_service = quadrant_service
         self.worker_id = worker_id
         self.cluster_id = cluster_id
-        self.vote_threshold = vote_threshold
-        self.confidence_threshold = confidence_threshold
 
     def process_rfi(
         self,
@@ -148,72 +142,80 @@ class RFIProcessor:
 
         # Process each target shard
         for shard_id in target_shards:
-            # Retrieve from this shard using ENHANCED query
-            results = self.embedding_repo.query(
-                shard_id=shard_id, query_text=query_text, n_results=3
-            )
+            try:
+                # Retrieve from this shard using ENHANCED query
+                results = self.embedding_repo.query(
+                    shard_id=shard_id, query_text=query_text, n_results=3
+                )
 
-            if not results or len(results) == 0:
-                # No relevant documents found
+                if not results or len(results) == 0:
+                    # No relevant documents found
+                    continue
+
+                # Take top result
+                top_result = results[0]
+
+                # L2 Verification using ORIGINAL query
+                # Extract depth from metadata
+                depth = top_result.metadata.get("hierarchy_depth", 0)
+
+                # Get foveated context for this shard
+                shard_context = None
+                if foveated_context and shard_id in foveated_context:
+                    shard_context = foveated_context[shard_id]
+
+                verification_result = self.verification_service.verify(
+                    query=original_query,
+                    content=top_result.content,
+                    depth=depth,
+                    foveated_context=shard_context,
+                    trace_id=trace_id,
+                )
+                
+                # Confidence from verification
+                adjusted_confidence = verification_result.confidence
+
+                # RCP v4: Compute binary vote from confidence
+                # Use raw confidence, effectively threshold is 0.0
+                binary_vote = self.quadrant_service.compute_binary_vote(
+                    adjusted_confidence, 0.5  # Soft default for binary flag, but full confidence is passed
+                )
+
+                # Hash content for deduplication
+                content_hash = self._hash_content(top_result.content)
+
+                # RCP v4: Semantic quadrant (placeholder - active agent recalculates)
+                # For now, use [0.0, 0.0] as active agent will compute from all votes
+                quadrant = [0.0, 0.0]
+
+                # Extract document ID from metadata for source tracking
+                document_id = top_result.metadata.get("id") or top_result.metadata.get("doc_id")
+                document_ids = [document_id] if document_id else []
+
+                # Create vote
+                vote = Vote(
+                    trace_id=trace_id,
+                    worker_id=self.worker_id,
+                    cluster_id=self.cluster_id,
+                    content_hash=content_hash,
+                    confidence_score=adjusted_confidence,
+                    binary_vote=binary_vote,
+                    semantic_quadrant=quadrant,
+                    content_snippet=top_result.content[:500],
+                    author_cluster=self.cluster_id,  # Worker is author of this artifact
+                    document_ids=document_ids,
+                )
+
+                votes.append(vote)
+
+            except Exception as e:
+                # Log error but continue to next shard
+                # This prevents a single missing shard from crashing the entire request
+                import logging
+                logging.getLogger("dpr_rc.domain.passive_agent").warning(
+                    f"Error processing shard {shard_id}: {str(e)}"
+                )
                 continue
-
-            # Take top result
-            top_result = results[0]
-
-            # L2 Verification using ORIGINAL query
-            # Extract depth from metadata
-            depth = top_result.metadata.get("hierarchy_depth", 0)
-
-            # Get foveated context for this shard
-            shard_context = None
-            if foveated_context and shard_id in foveated_context:
-                shard_context = foveated_context[shard_id]
-
-            verification_result = self.verification_service.verify(
-                query=original_query,
-                content=top_result.content,
-                depth=depth,
-                foveated_context=shard_context,
-                trace_id=trace_id,
-            )
-
-            # Check confidence threshold
-            adjusted_confidence = verification_result.adjusted_confidence
-            if adjusted_confidence < self.confidence_threshold:
-                # Below threshold, skip voting
-                continue
-
-            # RCP v4: Compute binary vote from confidence
-            binary_vote = self.quadrant_service.compute_binary_vote(
-                adjusted_confidence, self.vote_threshold
-            )
-
-            # Hash content for deduplication
-            content_hash = self._hash_content(top_result.content)
-
-            # RCP v4: Semantic quadrant (placeholder - active agent recalculates)
-            # For now, use [0.0, 0.0] as active agent will compute from all votes
-            quadrant = [0.0, 0.0]
-
-            # Extract document ID from metadata for source tracking
-            document_id = top_result.metadata.get("id") or top_result.metadata.get("doc_id")
-            document_ids = [document_id] if document_id else []
-
-            # Create vote
-            vote = Vote(
-                trace_id=trace_id,
-                worker_id=self.worker_id,
-                cluster_id=self.cluster_id,
-                content_hash=content_hash,
-                confidence_score=adjusted_confidence,
-                binary_vote=binary_vote,
-                semantic_quadrant=quadrant,
-                content_snippet=top_result.content[:500],
-                author_cluster=self.cluster_id,  # Worker is author of this artifact
-                document_ids=document_ids,
-            )
-
-            votes.append(vote)
 
         return votes
 

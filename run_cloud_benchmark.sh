@@ -15,7 +15,7 @@ RESULTS_DIR="benchmark_results_cloud"
 mkdir -p $RESULTS_DIR
 
 # Configuration
-BENCHMARK_SCALE="${BENCHMARK_SCALE:-medium}"
+BENCHMARK_SCALE="${BENCHMARK_SCALE:-small}"
 EMBEDDING_MODEL="${EMBEDDING_MODEL:-all-MiniLM-L6-v2}"
 REGION="${REGION:-us-central1}"
 DEBUG_BREAKPOINTS="${DEBUG_BREAKPOINTS:-false}"

@@ -262,8 +262,11 @@ class GCSShardRepository:
                 if self._load_from_local_dataset(shard_id, metadata, dataset_path):
                     return True
 
-            # Fall back to generic templates
-            return self._generate_generic_fallback(shard_id, metadata)
+            # Fall back to generic templates - REMOVED per user request
+            # if a shard does not exist, it should fail.
+            # return self._generate_generic_fallback(shard_id, metadata)
+            
+            raise Exception(f"Shard {shard_id} not found in GCS, Cache, or Local Dataset. Generic fallback disabled.")
 
         except Exception as e:
             self.logger.logger.warning(f"Failed to generate fallback data: {e}")

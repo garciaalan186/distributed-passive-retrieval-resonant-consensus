@@ -22,6 +22,7 @@ from dpr_rc.infrastructure.active_agent.loaders import ManifestLoader
 from dpr_rc.infrastructure.passive_agent.adapters import LoggerAdapter  # Reuse
 from dpr_rc.logging_utils import StructuredLogger, ComponentType
 from dpr_rc.models import RCPConfig
+from dpr_rc.embedding_utils import GCSEmbeddingStore
 
 
 class ActiveAgentFactory:
@@ -66,8 +67,20 @@ class ActiveAgentFactory:
         manifest_loader = ManifestLoader(bucket_name=bucket_name, scale=scale)
         manifest, causal_index = manifest_loader.load_manifests()
 
+        # Helper for shard discovery
+        shard_discovery_callback = None
+        if bucket_name:
+            def discover_shards():
+                store = GCSEmbeddingStore(bucket_name)
+                return store.list_available_shards(scale)
+            shard_discovery_callback = discover_shards
+
         # Domain Services
-        routing_service = RoutingService(manifest=manifest, causal_index=causal_index)
+        routing_service = RoutingService(
+            manifest=manifest, 
+            causal_index=causal_index,
+            shard_discovery_callback=shard_discovery_callback
+        )
 
         consensus_calculator = ConsensusCalculator(
             theta=rcp_config.theta,
