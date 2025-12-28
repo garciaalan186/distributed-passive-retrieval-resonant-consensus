@@ -1,0 +1,28 @@
+{
+  "expected_consensus": [
+    "08c873eb1f0b",
+    "cbaada80b88b",
+    "18df24bf6f24",
+    "189913fc3122",
+    "c9ebe2554834",
+    "454c2f7900d7",
+    "a154a6dc0342",
+    "e005313f9d3b",
+    "a022c9f99d34",
+    "339b5c6e5f25",
+    "3cb78c1f6c2f"
+  ],
+  "expected_disputed": [
+    {
+      "claim_id": "67944e275e37",
+      "perspective_views": {
+        "optimist": "Heakrus Krarsthorspreex will achieve Krithvixzeithrourt milestone by 2019 [optimist: ahead of schedule, Jounkol trending positive]",
+        "skeptic": "Heakrus Krarsthorspreex will achieve Krithvixzeithrourt milestone by 2019 [skeptic: delayed by Voumstrorstwie limitations]",
+        "methodologist": "Heakrus Krarsthorspreex will achieve Krithvixzeithrourt milestone by 2019 [methodologist: contingent on Harn standardization]",
+        "theorist": "Heakrus Krarsthorspreex will achieve Krithvixzeithrourt milestone by 2019 [theorist: depends on Quetzeixglorskrours theoretical advances]",
+        "empiricist": "Heakrus Krarsthorspreex will achieve Krithvixzeithrourt milestone by 2019 [empiricist: based on current Jounkol extrapolation]"
+      }
+    }
+  ],
+  "expected_sources": []
+}

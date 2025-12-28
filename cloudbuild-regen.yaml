@@ -1,0 +1,13 @@
+steps:
+  - name: "gcr.io/geometric-mnemic-manifolds-bm/dpr-agent:latest"
+    id: "regenerate-data"
+    entrypoint: "python"
+    args:
+      ["-m", "benchmark.generate_and_upload", "--scale", "medium", "--force"]
+    env:
+      - "HISTORY_BUCKET=${_HISTORY_BUCKET}"
+    dir: "/app"
+options:
+  logging: CLOUD_LOGGING_ONLY
+substitutions:
+  _HISTORY_BUCKET: "dpr-history-data-geometric-mnemic-manifolds-bm"

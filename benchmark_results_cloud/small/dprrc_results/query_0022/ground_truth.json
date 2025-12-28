@@ -1,0 +1,48 @@
+{
+  "expected_consensus": [
+    "530331c05209",
+    "85244bd23ef8",
+    "7905749d8992",
+    "31b42756e4a3",
+    "9895c037eda8",
+    "2396e142e670",
+    "10d916b503ac",
+    "051abf6b386e",
+    "04f3214cc5e2",
+    "de1c3cd050a6",
+    "69f3458d0c35"
+  ],
+  "expected_disputed": [
+    {
+      "claim_id": "d223fa465873",
+      "perspective_views": {
+        "optimist": "Binper Zirskrafstreith will achieve Streardstrox milestone by 2021 [optimist: ahead of schedule, Jer trending positive]",
+        "skeptic": "Binper Zirskrafstreith will achieve Streardstrox milestone by 2021 [skeptic: delayed by Snairkpech limitations]",
+        "methodologist": "Binper Zirskrafstreith will achieve Streardstrox milestone by 2021 [methodologist: contingent on Ken standardization]",
+        "theorist": "Binper Zirskrafstreith will achieve Streardstrox milestone by 2021 [theorist: depends on Zoxgerb theoretical advances]",
+        "empiricist": "Binper Zirskrafstreith will achieve Streardstrox milestone by 2021 [empiricist: based on current Wal extrapolation]"
+      }
+    },
+    {
+      "claim_id": "db48a0e62dfc",
+      "perspective_views": {
+        "optimist": "Binper Zirskrafstreith will achieve Glieskzoun milestone by 2027 [optimist: ahead of schedule, Wal trending positive]",
+        "skeptic": "Binper Zirskrafstreith will achieve Glieskzoun milestone by 2027 [skeptic: delayed by Strimstrouthheirtvan limitations]",
+        "methodologist": "Binper Zirskrafstreith will achieve Glieskzoun milestone by 2027 [methodologist: contingent on Koulkal standardization]",
+        "theorist": "Binper Zirskrafstreith will achieve Glieskzoun milestone by 2027 [theorist: depends on Bloortkoumpsmir theoretical advances]",
+        "empiricist": "Binper Zirskrafstreith will achieve Glieskzoun milestone by 2027 [empiricist: based on current Jer extrapolation]"
+      }
+    },
+    {
+      "claim_id": "7adf0db99f2c",
+      "perspective_views": {
+        "optimist": "Binper Zirskrafstreith will achieve Gleimzoux milestone by 2030 [optimist: ahead of schedule, Loatwous trending positive]",
+        "skeptic": "Binper Zirskrafstreith will achieve Gleimzoux milestone by 2030 [skeptic: delayed by Cheempwhauzzix limitations]",
+        "methodologist": "Binper Zirskrafstreith will achieve Gleimzoux milestone by 2030 [methodologist: contingent on Loatwous standardization]",
+        "theorist": "Binper Zirskrafstreith will achieve Gleimzoux milestone by 2030 [theorist: depends on Strimstrouthheirtvan theoretical advances]",
+        "empiricist": "Binper Zirskrafstreith will achieve Gleimzoux milestone by 2030 [empiricist: based on current Ken extrapolation]"
+      }
+    }
+  ],
+  "expected_sources": []
+}

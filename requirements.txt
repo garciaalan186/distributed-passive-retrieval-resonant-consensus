@@ -1,13 +1,30 @@
+# GCP services
 google-cloud-storage==2.14.0
 google-cloud-logging==3.9.0
+
+# Core dependencies
 redis==5.0.1
 chromadb==0.4.22
 pydantic==2.5.3
 numpy==1.26.3
-transformers==4.36.2
+tiktoken==0.5.2  # Token counting for tempo-normalized sharding
+
+# ML/Embeddings - GPU-enabled PyTorch for SLM inference acceleration
+# Note: CPU-only torch is ~200MB, GPU-enabled is ~2GB but provides 10-100x speedup
 torch==2.1.2
-accelerate==0.25.0
+sentence-transformers==2.3.1
+
+# SLM (Small Language Model) for L2 verification
+# transformers>=4.37.0 required for Qwen2 model support
+transformers==4.46.0
+accelerate>=0.26.0
+
+# Pin huggingface_hub to ensure compatibility with transformers
+huggingface_hub>=0.20.0,<0.27.0
+
+# API
 fastapi==0.109.0
 uvicorn==0.27.0
 python-json-logger==2.0.7
-xxhash==3.4.1
+requests==2.31.0
+aiohttp==3.9.1

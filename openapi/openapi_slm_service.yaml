@@ -1,0 +1,439 @@
+openapi: 3.0.3
+info:
+  title: DPR-RC SLM Service API
+  description: |
+    Small Language Model Service for DPR-RC System
+
+    **Purpose:**
+    - L2 semantic verification of retrieved content
+    - Query enhancement for better retrieval
+    - Hallucination detection for benchmark evaluation
+
+    **Model:**
+    - Default: Qwen/Qwen2-0.5B-Instruct
+    - Optimized for CPU/GPU deployment
+    - Single instance serves all workers
+    - Loaded once at startup with warmup
+
+    **Architecture:**
+    - Separate microservice for GPU/CPU optimization
+    - Async model loading (non-blocking startup)
+    - 503 status until model ready
+    - Supports hierarchical foveated context (L1/L2 summaries)
+  version: 4.0.0
+
+servers:
+  - url: https://dpr-slm-service-jgmlwx5hia-uc.a.run.app
+    description: Production (Cloud Run with GPU)
+  - url: http://localhost:8082
+    description: Local development
+
+tags:
+  - name: verification
+    description: L2 semantic verification operations
+  - name: enhancement
+    description: Query enhancement operations
+  - name: evaluation
+    description: Hallucination detection for benchmarking
+  - name: health
+    description: Health and readiness checks
+
+paths:
+  /:
+    get:
+      summary: Root endpoint
+      tags:
+        - health
+      responses:
+        '200':
+          description: Service information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  service:
+                    type: string
+                    example: DPR-RC SLM Service
+                  model:
+                    type: string
+                    example: Qwen/Qwen2-0.5B-Instruct
+                  device:
+                    type: string
+                    example: cuda
+                  model_loaded:
+                    type: boolean
+
+  /health:
+    get:
+      summary: Health check
+      description: Returns 200 even if model is still loading (use /ready for readiness)
+      tags:
+        - health
+      responses:
+        '200':
+          description: Service is running
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: healthy
+                  model:
+                    type: string
+                  device:
+                    type: string
+                  model_loaded:
+                    type: boolean
+
+  /ready:
+    get:
+      summary: Readiness check
+      description: Returns 200 only when model is fully loaded and ready for inference
+      tags:
+        - health
+      responses:
+        '200':
+          description: Model is loaded and ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ready
+                  model:
+                    type: string
+                  device:
+                    type: string
+        '503':
+          description: Model is still loading
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+                    example: Model Qwen/Qwen2-0.5B-Instruct is still loading. Please wait.
+
+  /verify:
+    post:
+      summary: Verify content relevance
+      description: |
+        Main L2 verification endpoint called by Passive Agents.
+
+        **Process:**
+        1. Constructs verification prompt with optional foveated context
+        2. Runs SLM inference (deterministic, no sampling)
+        3. Parses JSON response with confidence/supports/reasoning
+        4. Returns structured verification result
+
+        **Hierarchical Context:**
+        - L1: Shard summary (optional)
+        - L2: Epoch summary (optional)
+      tags:
+        - verification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyRequest'
+      responses:
+        '200':
+          description: Verification completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyResponse'
+        '503':
+          description: Model not loaded yet
+        '500':
+          description: Verification error
+
+  /batch_verify:
+    post:
+      summary: Batch verification
+      description: Verify multiple content pieces at once (more efficient)
+      tags:
+        - verification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '#/components/schemas/VerifyRequest'
+      responses:
+        '200':
+          description: Batch verification completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                  model_id:
+                    type: string
+
+  /enhance_query:
+    post:
+      summary: Enhance query for better retrieval
+      description: |
+        Called by Active Agent before RFI broadcast.
+
+        **Enhancements:**
+        - Expands abbreviations (ML → machine learning)
+        - Adds synonyms for better recall
+        - Clarifies ambiguous terms
+        - Incorporates temporal context if provided
+      tags:
+        - enhancement
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnhanceQueryRequest'
+      responses:
+        '200':
+          description: Query enhanced successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnhanceQueryResponse'
+        '503':
+          description: Model not loaded
+        '500':
+          description: Enhancement error (returns original query)
+
+  /check_hallucination:
+    post:
+      summary: Check for hallucinations
+      description: |
+        Called by benchmark suite to evaluate response quality.
+
+        **Detection:**
+        - Fabricated facts not in ground truth
+        - Invalid terms not in valid_terms list
+        - False certainty (high confidence with wrong answer)
+        - Semantic understanding of context and alternatives
+      tags:
+        - evaluation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HallucinationCheckRequest'
+      responses:
+        '200':
+          description: Hallucination check completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HallucinationCheckResponse'
+        '503':
+          description: Model not loaded
+
+  /batch_check_hallucination:
+    post:
+      summary: Batch hallucination checking
+      description: Check multiple query-response pairs at once
+      tags:
+        - evaluation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '#/components/schemas/HallucinationCheckRequest'
+      responses:
+        '200':
+          description: Batch checking completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/HallucinationCheckResponse'
+                  model_id:
+                    type: string
+
+components:
+  schemas:
+    VerifyRequest:
+      type: object
+      required:
+        - query
+        - retrieved_content
+      properties:
+        query:
+          type: string
+          description: Original user query
+          example: What caused the resonance shift?
+        retrieved_content:
+          type: string
+          description: Content retrieved from ChromaDB (max 2000 chars)
+        trace_id:
+          type: string
+          format: uuid
+          description: Optional trace ID for correlation
+        shard_summary:
+          type: string
+          description: L1 foveated context (shard-level summary)
+        epoch_summary:
+          type: string
+          description: L2 foveated context (epoch-level summary)
+
+    VerifyResponse:
+      type: object
+      required:
+        - confidence
+        - reasoning
+        - supports_query
+        - model_id
+        - inference_time_ms
+      properties:
+        confidence:
+          type: number
+          format: float
+          description: Confidence score (0.0-1.0)
+          minimum: 0.0
+          maximum: 1.0
+        reasoning:
+          type: string
+          description: SLM's reasoning for the judgment
+        supports_query:
+          type: boolean
+          description: Whether content answers the query
+        model_id:
+          type: string
+          example: Qwen/Qwen2-0.5B-Instruct
+        inference_time_ms:
+          type: number
+          format: float
+          description: Inference time in milliseconds
+
+    EnhanceQueryRequest:
+      type: object
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          description: Original user query
+        timestamp_context:
+          type: string
+          format: date
+          description: Optional temporal context
+        trace_id:
+          type: string
+          format: uuid
+
+    EnhanceQueryResponse:
+      type: object
+      required:
+        - original_query
+        - enhanced_query
+        - expansions
+        - model_id
+        - inference_time_ms
+      properties:
+        original_query:
+          type: string
+          description: The original query
+        enhanced_query:
+          type: string
+          description: Enhanced version with expansions
+        expansions:
+          type: array
+          items:
+            type: string
+          description: List of synonym expansions
+          example: ["machine learning", "ML", "artificial intelligence"]
+        model_id:
+          type: string
+        inference_time_ms:
+          type: number
+          format: float
+
+    HallucinationCheckRequest:
+      type: object
+      required:
+        - query
+        - system_response
+        - ground_truth
+        - valid_terms
+        - confidence
+      properties:
+        query:
+          type: string
+          description: Original user query
+        system_response:
+          type: string
+          description: System's response to check
+        ground_truth:
+          type: object
+          description: Expected answer data
+        valid_terms:
+          type: array
+          items:
+            type: string
+          description: List of valid domain terms from glossary
+        confidence:
+          type: number
+          format: float
+          description: System's reported confidence
+        trace_id:
+          type: string
+          format: uuid
+
+    HallucinationCheckResponse:
+      type: object
+      required:
+        - has_hallucination
+        - explanation
+        - severity
+        - flagged_content
+        - model_id
+        - inference_time_ms
+      properties:
+        has_hallucination:
+          type: boolean
+          description: Whether hallucination was detected
+        hallucination_type:
+          type: string
+          nullable: true
+          enum: [fabrication, invalid_term, false_certainty, null]
+          description: Type of hallucination detected
+        explanation:
+          type: string
+          description: SLM's explanation of the detection
+        severity:
+          type: string
+          enum: [none, low, medium, high]
+          description: Severity of the hallucination
+        flagged_content:
+          type: array
+          items:
+            type: string
+          description: Specific content fragments that were flagged
+        model_id:
+          type: string
+        inference_time_ms:
+          type: number
+          format: float
