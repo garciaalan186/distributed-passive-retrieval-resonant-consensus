@@ -21,6 +21,7 @@ import requests
 
 from .synthetic_history import SyntheticHistoryGeneratorV2
 from benchmark.domain.services import EvaluationService
+from dpr_rc.infrastructure.passive_agent.repositories import ChromaDBRepository
 
 
 @dataclass
@@ -61,6 +62,7 @@ class ResearchBenchmarkSuite:
 
         # All available scale levels
         all_scales = {
+            "mini": {"name": "mini", "events_per_topic_per_year": 2, "num_domains": 1},
             "small": {"name": "small", "events_per_topic_per_year": 10, "num_domains": 2},
             "medium": {"name": "medium", "events_per_topic_per_year": 25, "num_domains": 3},
             "large": {"name": "large", "events_per_topic_per_year": 50, "num_domains": 4},
@@ -101,6 +103,57 @@ class ResearchBenchmarkSuite:
         self.slm_timeout = float(os.getenv("SLM_TIMEOUT", "30.0"))
 
         print(f"Executor mode: {'UseCase (direct)' if self.use_new_executor else 'HTTP'}")
+
+    def _ingest_dataset(self, dataset: Dict):
+        """Ingest dataset into ChromaDB for Direct/UseCase mode."""
+        from dpr_rc.infrastructure.passive_agent.repositories import ChromaDBRepository
+        
+        print("\nIngesting dataset into ChromaDB...")
+        
+        # Repository will automatically use CHROMA_DB_PATH env var
+        repo = ChromaDBRepository() 
+        
+        # Group by year/shard
+        shards = {}
+        for event in dataset.get("events", []):
+            try:
+                # Parse year from timestamp "YYYY-MM-DD..."
+                year = event["timestamp"][:4]
+                shard_id = f"shard_{year}"
+                
+                if shard_id not in shards:
+                    shards[shard_id] = []
+                    
+                # Create document - Use event content
+                # Include key metadata for filtering/verification
+                doc = {
+                    "id": event["id"],
+                    "content": event["content"],
+                    "metadata": {
+                        "id": event["id"],
+                        "doc_id": event["id"], # redundancy for safety
+                        "year": int(year),
+                        "timestamp": event["timestamp"],
+                        "domain": event.get("topic", "general"),
+                        "type": "event"
+                    }
+                }
+                shards[shard_id].append(doc)
+            except Exception as e:
+                print(f"Warning: Skipping event {event.get('id')}: {e}")
+            
+        # Bulk insert per shard
+        total_inserted = 0
+        for shard_id, docs in shards.items():
+            try:
+                count = repo.bulk_insert(shard_id, docs)
+                total_inserted += count
+                if count > 0:
+                    print(f"  {shard_id}: Inserted {count} documents (skipped {len(docs) - count} duplicates)")
+            except Exception as e:
+                print(f"Error inserting shard {shard_id}: {e}")
+            
+        print(f"Ingestion complete. Total new documents: {total_inserted}")
         
     def run_full_benchmark(self):
         """Execute complete benchmark across all scale levels"""
@@ -149,6 +202,10 @@ class ResearchBenchmarkSuite:
         
         print(f"Generated {len(dataset['events'])} events, {len(dataset['queries'])} queries")
         
+        # Ingest dataset if using Direct mode (Local Benchmark)
+        if self.use_new_executor:
+            self._ingest_dataset(dataset)
+        
         # Run queries against DPR-RC
         print(f"Running DPR-RC queries...")
         dprrc_results = self.run_dprrc_queries(
@@ -192,12 +249,13 @@ class ResearchBenchmarkSuite:
 
         Uses either HTTP mode or UseCase mode based on USE_NEW_EXECUTOR flag.
         Both modes produce identical results, just via different transport layers.
+
+        Tier 1 Optimization: Parallel query execution with concurrency limit.
         """
         import asyncio
         from benchmark.infrastructure.executors import create_dprrc_executor
 
         results_dir.mkdir(exist_ok=True)
-        results = []
 
         # Create executor based on mode
         executor = create_dprrc_executor(
@@ -211,26 +269,38 @@ class ResearchBenchmarkSuite:
 
         print(f"Using executor mode: {executor.execution_mode}")
 
+        # Tier 1: Check if parallel execution is enabled
+        enable_parallel = os.getenv("ENABLE_PARALLEL_QUERIES", "true").lower() == "true"
+        max_concurrent = int(os.getenv("MAX_CONCURRENT_QUERIES", "6"))
+
+        if not enable_parallel:
+            print("Parallel queries disabled, using sequential execution")
+            return self._run_queries_sequential(queries, results_dir, executor)
+
+        print(f"Parallel queries enabled (max {max_concurrent} concurrent)")
+        return asyncio.run(self._run_queries_parallel(
+            queries, results_dir, executor, max_concurrent
+        ))
+
+    def _run_queries_sequential(
+        self,
+        queries: List[Dict],
+        results_dir: Path,
+        executor
+    ) -> List[Dict]:
+        """Sequential query execution (original implementation for rollback)"""
+        import asyncio
+
+        results = []
         for i, query in enumerate(queries):
             query_id = f"query_{i:04d}"
             query_dir = results_dir / query_id
             query_dir.mkdir(exist_ok=True)
 
-            # Save input
-            self._save_json({
-                "query_text": query["question"],
-                "timestamp_context": query.get("timestamp_context"),
-                "query_type": query.get("type")
-            }, query_dir / "input.json")
+            # Save input and ground truth
+            self._save_query_metadata(query, query_dir)
 
-            # Save ground truth
-            self._save_json({
-                "expected_consensus": query.get("expected_consensus", []),
-                "expected_disputed": query.get("expected_disputed", []),
-                "expected_sources": query.get("expected_sources", [])
-            }, query_dir / "ground_truth.json")
-
-            # Execute query via executor (async)
+            # Execute query
             try:
                 result = asyncio.run(executor.execute(
                     query=query["question"],
@@ -238,44 +308,9 @@ class ResearchBenchmarkSuite:
                     timestamp_context=query.get("timestamp_context")
                 ))
 
-                if result.success:
-                    # Save system output
-                    self._save_json({
-                        "final_response": result.response,
-                        "confidence": result.confidence,
-                        "sources": result.metadata.get("sources", []),
-                        "status": result.metadata.get("status", "SUCCESS"),
-                        "execution_mode": result.metadata.get("execution_mode")
-                    }, query_dir / "system_output.json")
-
-                    # Fetch audit trail and exchange history from Cloud Logging (only for HTTP mode)
-                    if executor.execution_mode == "http":
-                        # Fetch raw audit trail (backwards compatibility)
-                        audit_trail = self._fetch_audit_trail(query_id)
-                        if audit_trail:
-                            self._save_json(audit_trail, query_dir / "audit_trail.json")
-
-                        # Fetch structured exchange history using new download script
-                        exchange_history = self._fetch_exchange_history(query_id)
-                        if exchange_history:
-                            self._save_json(exchange_history, query_dir / "exchange_history.json")
-
-                    results.append({
-                        "query_id": query_id,
-                        "response": result.response,
-                        "confidence": result.confidence,
-                        "latency_ms": result.latency_ms,
-                        "success": True
-                    })
-                else:
-                    results.append({
-                        "query_id": query_id,
-                        "response": "",
-                        "confidence": 0,
-                        "latency_ms": result.latency_ms,
-                        "success": False,
-                        "error": result.error
-                    })
+                results.append(
+                    self._process_query_result(result, query_id, query_dir, executor)
+                )
 
             except Exception as e:
                 results.append({
@@ -288,6 +323,138 @@ class ResearchBenchmarkSuite:
                 })
 
         return results
+
+    async def _run_queries_parallel(
+        self,
+        queries: List[Dict],
+        results_dir: Path,
+        executor,
+        max_concurrent: int
+    ) -> List[Dict]:
+        """
+        Parallel query execution with concurrency limit (Tier 1 optimization).
+
+        Processes queries in batches of max_concurrent to avoid overwhelming
+        the system while still achieving significant speedup.
+        """
+        import asyncio
+
+        results = []
+
+        # Pre-create all query directories and save metadata
+        for i, query in enumerate(queries):
+            query_id = f"query_{i:04d}"
+            query_dir = results_dir / query_id
+            query_dir.mkdir(exist_ok=True)
+            self._save_query_metadata(query, query_dir)
+
+        # Process queries in batches
+        for batch_start in range(0, len(queries), max_concurrent):
+            batch_end = min(batch_start + max_concurrent, len(queries))
+            batch = queries[batch_start:batch_end]
+
+            print(f"Processing batch {batch_start//max_concurrent + 1}: queries {batch_start}-{batch_end-1}")
+
+            # Prepare batch for execute_batch (query_id, query_text tuples)
+            batch_queries = [
+                (f"query_{batch_start + i:04d}", q["question"])
+                for i, q in enumerate(batch)
+            ]
+
+            # Execute batch in parallel
+            try:
+                batch_results = await executor.execute_batch(
+                    batch_queries,
+                    timestamp_context=batch[0].get("timestamp_context") if batch else None
+                )
+
+                # Process results
+                for i, result in enumerate(batch_results):
+                    query_idx = batch_start + i
+                    query_id = f"query_{query_idx:04d}"
+                    query_dir = results_dir / query_id
+
+                    results.append(
+                        self._process_query_result(result, query_id, query_dir, executor)
+                    )
+
+            except Exception as e:
+                # Handle batch failure - mark all queries in batch as failed
+                for i in range(len(batch)):
+                    query_idx = batch_start + i
+                    results.append({
+                        "query_id": f"query_{query_idx:04d}",
+                        "response": "",
+                        "confidence": 0,
+                        "latency_ms": 0,
+                        "success": False,
+                        "error": f"Batch execution failed: {str(e)}"
+                    })
+
+        return results
+
+    def _save_query_metadata(self, query: Dict, query_dir: Path):
+        """Save query input and ground truth metadata"""
+        self._save_json({
+            "query_text": query["question"],
+            "timestamp_context": query.get("timestamp_context"),
+            "query_type": query.get("type")
+        }, query_dir / "input.json")
+
+        self._save_json({
+            "expected_consensus": query.get("expected_consensus", []),
+            "expected_disputed": query.get("expected_disputed", []),
+            "expected_sources": query.get("expected_sources", [])
+        }, query_dir / "ground_truth.json")
+
+    def _process_query_result(
+        self,
+        result,
+        query_id: str,
+        query_dir: Path,
+        executor
+    ) -> Dict:
+        """Process and save query result"""
+        if result.success:
+            # Save system output
+            self._save_json({
+                "final_response": result.response,
+                "confidence": result.confidence,
+                "sources": result.metadata.get("sources", []),
+                "status": result.metadata.get("status", "SUCCESS"),
+                "execution_mode": result.metadata.get("execution_mode"),
+                "superposition": result.metadata.get("superposition") or result.metadata.get("resonance_matrix")
+            }, query_dir / "system_output.json")
+
+            # Fetch audit trail and exchange history from Cloud Logging (only for HTTP mode)
+            if executor.execution_mode == "http":
+                # Fetch raw audit trail (backwards compatibility)
+                audit_trail = self._fetch_audit_trail(query_id)
+                if audit_trail:
+                    self._save_json(audit_trail, query_dir / "audit_trail.json")
+
+                # Fetch structured exchange history using new download script
+                exchange_history = self._fetch_exchange_history(query_id)
+                if exchange_history:
+                    self._save_json(exchange_history, query_dir / "exchange_history.json")
+
+            return {
+                "query_id": query_id,
+                "response": result.response,
+                "confidence": result.confidence,
+                "superposition": result.metadata.get("superposition") or result.metadata.get("resonance_matrix"),
+                "latency_ms": result.latency_ms,
+                "success": True
+            }
+        else:
+            return {
+                "query_id": query_id,
+                "response": "",
+                "confidence": 0,
+                "latency_ms": result.latency_ms,
+                "success": False,
+                "error": result.error
+            }
     
     def run_baseline_queries(self, queries: List[Dict], results_dir: Path) -> List[Dict]:
         """Run baseline RAG queries (local fallback if cloud unavailable)"""
@@ -491,6 +658,9 @@ class ResearchBenchmarkSuite:
         for domain_name, domain_data in glossary.get('domains', {}).items():
             valid_terms.update(domain_data.get('concepts', {}).keys())
             valid_terms.add(domain_name)
+            # FIX: Add individual words from multi-word domain names (e.g., "Binper Zirskrafstreith")
+            for word in domain_name.split():
+                valid_terms.add(word)
 
         # Common English words that should NOT be flagged
         # FIX: Expanded whitelist to prevent false positives on common words
@@ -559,15 +729,17 @@ class ResearchBenchmarkSuite:
 
         # Add physics terms
         if 'physics' in glossary:
-            valid_terms.extend(list(glossary.get('physics', {}).get('particles', {}).keys())[:20])
-            valid_terms.extend(list(glossary.get('physics', {}).get('phenomena', {}).keys())[:20])
+            valid_terms.extend(list(glossary.get('physics', {}).get('particles', {}).keys()))
+            valid_terms.extend(list(glossary.get('physics', {}).get('phenomena', {}).keys()))
 
         # Add domain terms
         for domain_name, domain_data in glossary.get('domains', {}).items():
-            valid_terms.extend(list(domain_data.get('concepts', {}).keys())[:10])
+            valid_terms.extend(list(domain_data.get('concepts', {}).keys()))
+            # FIX: Add individual words from multi-word domain names (e.g., "Binper Zirskrafstreith")
+            valid_terms.extend(domain_name.split())
 
-        # Limit to reasonable size (SLM will sample further)
-        return valid_terms[:50]
+        # Return all terms
+        return valid_terms
 
     def batch_detect_hallucination_via_slm(
         self,
@@ -592,8 +764,9 @@ class ResearchBenchmarkSuite:
             return []
 
         # If SLM service URL is not configured, fall back to rule-based detection
+        # Note: We now use SLM even in Direct mode for better hallucination detection
         if not self.slm_service_url:
-            print("No SLM service URL configured, using fallback detection for all requests")
+            print(f"Using fallback hallucination detection (No SLM URL configured)")
             return [
                 self._fallback_hallucination_detection(
                     req["system_response"],
@@ -726,7 +899,8 @@ class ResearchBenchmarkSuite:
                     response=response,
                     expected_entities=question_entities,
                     recall_threshold=0.5,
-                    min_response_length=10
+                    min_response_length=10,
+                    superposition_data=dprrc.get("superposition")
                 )
 
                 if correctness_result.is_correct:
@@ -1024,7 +1198,6 @@ def main():
             upload_results_to_gcs(suite.output_dir)
         else:
             print("\nHISTORY_BUCKET not set, skipping GCS upload")
-
 
 if __name__ == "__main__":
     main()
