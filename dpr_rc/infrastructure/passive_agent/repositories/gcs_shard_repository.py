@@ -255,18 +255,32 @@ class GCSShardRepository:
     def _generate_fallback_data(self, shard_id: str, metadata: ShardMetadata) -> bool:
         """Generate fallback data from local dataset or generic templates."""
         try:
-            # Try loading from local benchmark dataset first
-            dataset_path = f"benchmark_results_research/{self.scale}/dataset.json"
+            # Try loading from configured local dataset path first
+            env_path = os.getenv("LOCAL_DATASET_PATH")
+            if env_path:
+                if os.path.exists(env_path):
+                     self.logger.logger.info(f"Loading from LOCAL_DATASET_PATH: {env_path}")
+                     if self._load_from_local_dataset(shard_id, metadata, env_path):
+                        return True
+                else:
+                    self.logger.logger.warning(f"LOCAL_DATASET_PATH set but file not found: {env_path} (CWD: {os.getcwd()})")
 
-            if os.path.exists(dataset_path):
-                if self._load_from_local_dataset(shard_id, metadata, dataset_path):
-                    return True
+            # Try loading from local benchmark dataset default paths
+            possible_paths = [
+                f"benchmark_results_local/{self.scale}/dataset.json",
+                f"benchmark_results_research/{self.scale}/dataset.json"
+            ]
+            
+            for path in possible_paths:
+                if os.path.exists(path):
+                    if self._load_from_local_dataset(shard_id, metadata, path):
+                        return True
 
             # Fall back to generic templates - REMOVED per user request
             # if a shard does not exist, it should fail.
             # return self._generate_generic_fallback(shard_id, metadata)
             
-            raise Exception(f"Shard {shard_id} not found in GCS, Cache, or Local Dataset. Generic fallback disabled.")
+            raise Exception(f"Shard {shard_id} not found in GCS, Cache, or Local Dataset locations: {possible_paths}. Generic fallback disabled.")
 
         except Exception as e:
             self.logger.logger.warning(f"Failed to generate fallback data: {e}")

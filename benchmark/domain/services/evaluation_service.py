@@ -6,7 +6,7 @@ superposition awareness. All I/O (HTTP calls, file operations) must be
 handled by the caller.
 """
 
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from benchmark.domain.value_objects import CorrectnessResult
 
 
@@ -86,7 +86,8 @@ class EvaluationService:
         response: str,
         expected_entities: List[str],
         recall_threshold: float = 0.5,
-        min_response_length: int = 20
+        min_response_length: int = 20,
+        superposition_data: Optional[Dict[str, Any]] = None
     ) -> CorrectnessResult:
         """
         Evaluate correctness for superposition-aware responses.
@@ -94,31 +95,20 @@ class EvaluationService:
         This handles responses that may present multiple alternatives/perspectives.
         The response is correct if ANY option contains the expected entities.
 
+        If superposition_data (raw JSON) is provided, it evaluates against the
+        structured quadrants (consensus, polar, negative_consensus) instead of
+        parsing text.
+
         Args:
             response: The system's response text (may contain multiple options)
             expected_entities: List of entities expected to appear
             recall_threshold: Minimum fraction of entities per option
             min_response_length: Minimum response length
+            superposition_data: Optional raw superposition dictionary
 
         Returns:
             CorrectnessResult indicating if correct answer is present in any option
-
-        Implementation Notes:
-            - Extracts options using _extract_options()
-            - Evaluates each option independently
-            - Returns True if ANY option passes correctness check
-            - This reflects DPR-RC's design: correct answer must be present,
-              even if presented alongside alternatives
         """
-        if not response or len(response) < min_response_length:
-            return CorrectnessResult(
-                is_correct=False,
-                correctness_score=0.0,
-                matched_entities=[],
-                expected_entities=expected_entities,
-                explanation=f"Response too short (min {min_response_length} chars)"
-            )
-
         if not expected_entities:
             # No entities to check
             return CorrectnessResult(
@@ -129,14 +119,44 @@ class EvaluationService:
                 explanation="No entities to evaluate (query has no expected entities)"
             )
 
-        # Extract potential options from response
-        options = EvaluationService._extract_options(response)
+        # Extract potential options
+        options = []
+
+        if superposition_data:
+            # Handle both old and new superposition schemas:
+            # Old schema: {"consensus": [...], "polar": [...], "negative_consensus": [...]}
+            #   where items are dicts with 'content' field
+            # New schema: {"consensus_facts": [...], "perspectival_claims": [...]}
+            #   where items are strings directly
+
+            # Try new schema first (consensus_facts, perspectival_claims)
+            for key in ["consensus_facts", "perspectival_claims"]:
+                if key in superposition_data and isinstance(superposition_data[key], list):
+                    for item in superposition_data[key]:
+                        if isinstance(item, str):
+                            options.append(item)
+                        elif isinstance(item, dict) and "content" in item:
+                            options.append(item["content"])
+
+            # Fallback to old schema (consensus, polar, negative_consensus)
+            if not options:
+                for key in ["consensus", "polar", "negative_consensus"]:
+                    if key in superposition_data and isinstance(superposition_data[key], list):
+                        for artifact in superposition_data[key]:
+                            # Artifact is a dict with 'content'
+                            if isinstance(artifact, dict) and "content" in artifact:
+                                options.append(artifact["content"])
+        else:
+            # Parse text response
+            options = EvaluationService._extract_options(response)
 
         # Check if any option contains the expected entities
         best_matched = []
         best_recall = 0.0
 
         for option in options:
+            if not option:
+                continue
             matched = [entity for entity in expected_entities if entity in option]
             recall = len(matched) / len(expected_entities)
 

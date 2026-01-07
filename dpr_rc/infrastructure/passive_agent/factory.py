@@ -76,11 +76,16 @@ class PassiveAgentFactory:
         )
 
         # Infrastructure: Clients
-        slm_client = HttpSLMClient(
-            slm_service_url=slm_url,
-            timeout=30,
-            worker_id=worker_id,
-        )
+        use_direct = os.getenv("USE_DIRECT_SERVICES", "false").lower() == "true"
+        if use_direct:
+            from dpr_rc.infrastructure.passive_agent.clients import DirectSLMClient
+            slm_client = DirectSLMClient(worker_id=worker_id)
+        else:
+            slm_client = HttpSLMClient(
+                slm_service_url=slm_url,
+                timeout=30,
+                worker_id=worker_id,
+            )
 
         # Infrastructure: Logger
         structured_logger = StructuredLogger(ComponentType.PASSIVE_WORKER)

@@ -56,6 +56,25 @@ class SimpleRouterService(IRouterService):
             List of shard filenames (e.g., ["shard_000_2015-01_2021-12.json"])
         """
         try:
+            # Check for local dataset first
+            local_path = os.getenv("LOCAL_DATASET_PATH")
+            if local_path and os.path.exists(local_path):
+                import json
+                try:
+                    with open(local_path, 'r') as f:
+                        data = json.load(f)
+                        claims = data.get("claims", {})
+                        years = set()
+                        for claim in claims.values():
+                            ts = claim.get("timestamp", "")
+                            if ts and len(ts) >= 4:
+                                years.add(ts[:4])
+                        
+                        return [f"shard_{year}.json" for year in sorted(years)]
+                except Exception as e:
+                    print(f"Failed to parse local dataset for shards: {e}")
+                    # Fallback to GCS attempt
+            
             from google.cloud import storage
         except ImportError:
             # google-cloud-storage not available, return empty
@@ -81,7 +100,5 @@ class SimpleRouterService(IRouterService):
                     shard_names.append(blob.name)
 
             return shard_names
-
         except Exception:
-            # GCS error, return empty (will fallback to broadcast)
             return []
