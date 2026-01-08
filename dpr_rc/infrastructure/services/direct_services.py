@@ -25,16 +25,21 @@ class DirectSLMService(ISLMService):
     In-process implementation of SLM service.
     Calls the InferenceEngine directly.
 
+    Supports mixed model mode:
+    - Fast model (Qwen2-0.5B) for query enhancement (SLM_FAST_MODEL)
+    - Accurate model (Phi-3) for verification (SLM_MODEL)
+
     In multi-GPU mode, each call gets the engine from the factory based on
     the current thread's GPU context (set by SLMFactory.set_gpu_context()).
     """
     def __init__(self):
         self._initialized = False
+        self._fast_initialized = False
 
     @property
     def engine(self):
         """
-        Get inference engine from factory.
+        Get main inference engine from factory (for verification).
 
         The factory handles all caching - we don't cache here to support
         proper GPU context switching in multi-GPU mode.
@@ -44,15 +49,36 @@ class DirectSLMService(ISLMService):
             self._initialized = True
         return SLMFactory.get_engine()
 
+    @property
+    def fast_engine(self):
+        """
+        Get fast inference engine from factory (for enhancement).
+
+        In mixed model mode, this returns a lightweight model optimized
+        for speed. Falls back to main engine if no fast model configured.
+        """
+        if not self._fast_initialized:
+            import os
+            fast_model = os.getenv("SLM_FAST_MODEL")
+            if fast_model:
+                print(f"Initializing DirectSLMService fast engine ({fast_model})...")
+            self._fast_initialized = True
+        return SLMFactory.get_fast_engine()
+
     def enhance_query(
         self,
         query_text: str,
         timestamp_context: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Enhance query using local engine instance."""
+        """
+        Enhance query using fast engine (in mixed model mode).
+
+        Uses SLM_FAST_MODEL for speed if configured, otherwise falls
+        back to main model.
+        """
         try:
-            # Call engine directly (blocking call)
-            result = self.engine.enhance_query(
+            # Use fast engine for enhancement (or main engine if not configured)
+            result = self.fast_engine.enhance_query(
                 query=query_text,
                 timestamp_context=timestamp_context
             )

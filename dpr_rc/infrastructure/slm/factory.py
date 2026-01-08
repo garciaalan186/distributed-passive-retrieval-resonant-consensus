@@ -17,13 +17,17 @@ class SLMFactory:
     """
     Factory for creating SLM Service components.
 
-    Supports two modes:
+    Supports multiple modes:
     - Singleton mode: Single shared engine (default, for single-GPU)
     - GPU Pool mode: Per-GPU engines for parallel execution (multi-GPU)
+    - Mixed model mode: Fast model for enhancement, accurate model for verification
     """
 
-    # Singleton instance for single-GPU mode
+    # Singleton instance for single-GPU mode (main/verification model)
     _inference_engine_instance: Optional[InferenceEngine] = None
+
+    # Fast model singleton (for query enhancement in mixed mode)
+    _fast_engine_instance: Optional[InferenceEngine] = None
 
     # GPU-indexed engine pool for multi-GPU mode
     _gpu_engines: Dict[int, InferenceEngine] = {}
@@ -69,6 +73,70 @@ class SLMFactory:
             return SLMFactory._get_gpu_engine(gpu_id)
         else:
             return SLMFactory._get_singleton_engine()
+
+    @staticmethod
+    def get_fast_engine() -> InferenceEngine:
+        """
+        Get fast inference engine for query enhancement.
+
+        In mixed model mode (SLM_FAST_MODEL set), returns a lightweight model
+        optimized for speed rather than accuracy. Falls back to main engine
+        if no fast model is configured.
+
+        Returns:
+            Fast InferenceEngine instance (or main engine as fallback)
+        """
+        fast_model = os.getenv("SLM_FAST_MODEL")
+
+        if not fast_model:
+            # No fast model configured, use main engine
+            return SLMFactory.get_engine()
+
+        # Get or create fast engine singleton
+        if SLMFactory._fast_engine_instance is None:
+            with SLMFactory._init_lock:
+                if SLMFactory._fast_engine_instance is None:
+                    SLMFactory._fast_engine_instance = SLMFactory._create_fast_engine()
+
+        return SLMFactory._fast_engine_instance
+
+    @staticmethod
+    def _create_fast_engine() -> InferenceEngine:
+        """
+        Create fast inference engine for query enhancement.
+
+        Uses SLM_FAST_MODEL environment variable for model selection.
+        Optimized for speed: no quantization needed for small models.
+
+        Returns:
+            Configured fast InferenceEngine
+        """
+        model_id = os.getenv("SLM_FAST_MODEL", "Qwen/Qwen2-0.5B-Instruct")
+        max_tokens = int(os.getenv("SLM_FAST_MAX_TOKENS", "100"))
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        print(f"Loading fast model for enhancement: {model_id}")
+
+        # Domain Services
+        prompt_builder = PromptBuilder()
+        response_parser = ResponseParser()
+
+        # Small models don't need quantization
+        model_backend = TransformersBackend(
+            model_id=model_id,
+            device=device,
+            torch_dtype=torch.float16 if "cuda" in device else None,
+            device_map=None,
+            use_4bit_quantization=False,  # Small model, no need
+        )
+
+        return InferenceEngine(
+            model_backend=model_backend,
+            prompt_builder=prompt_builder,
+            response_parser=response_parser,
+            max_tokens=max_tokens,
+        )
 
     @staticmethod
     def _get_gpu_engine(gpu_id: int) -> InferenceEngine:
@@ -306,6 +374,7 @@ class SLMFactory:
         """
         with SLMFactory._init_lock:
             SLMFactory._inference_engine_instance = None
+            SLMFactory._fast_engine_instance = None
             SLMFactory._gpu_engines.clear()
             if hasattr(SLMFactory._thread_local, 'gpu_id'):
                 delattr(SLMFactory._thread_local, 'gpu_id')

@@ -13,9 +13,13 @@ sys.path.append(os.getcwd())
 os.environ["USE_NEW_EXECUTOR"] = "true"
 os.environ["USE_DIRECT_SERVICES"] = "true"
 os.environ["BENCHMARK_SCALE"] = "mini"
-# Model Configuration - Phi-3-mini with 4-bit for accuracy, optimizations for speed
-os.environ["SLM_MODEL"] = "microsoft/Phi-3-mini-4k-instruct"  # Accurate model
-os.environ["SLM_USE_4BIT_QUANTIZATION"] = "true"  # ~2GB per instance, allows 4 workers
+# Model Configuration - Mixed Model Mode
+# - Phi-3-mini (4-bit) for verification (accurate)
+# - Qwen2-0.5B for enhancement (fast)
+os.environ["SLM_MODEL"] = "microsoft/Phi-3-mini-4k-instruct"  # Main model for verification
+os.environ["SLM_USE_4BIT_QUANTIZATION"] = "true"  # ~2GB per instance
+os.environ["SLM_FAST_MODEL"] = "Qwen/Qwen2-0.5B-Instruct"  # Fast model for enhancement
+os.environ["SLM_FAST_MAX_TOKENS"] = "100"  # Enhancement needs fewer tokens
 os.environ["SLM_TIMEOUT"] = "45"
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 os.environ["ANONYMIZED_TELEMETRY"] = "false"
@@ -27,8 +31,8 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["SLM_MAX_TOKENS"] = "150"  # Reduced from 500 - verification responses are short
 os.environ["SLM_ATTN_IMPL"] = "sdpa"  # Use PyTorch native attention (faster for small models)
 
-# Skip query enhancement - saves one SLM call per query (~50% latency reduction)
-os.environ["ENABLE_QUERY_ENHANCEMENT"] = "false"
+# Enable query enhancement with fast model
+os.environ["ENABLE_QUERY_ENHANCEMENT"] = "true"
 os.environ["CONTROLLER_URL"] = "http://localhost:8080"
 os.environ["SLM_SERVICE_URL"] = "http://localhost:8081"
 os.environ["PASSIVE_WORKER_URL"] = "http://localhost:8082"

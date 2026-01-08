@@ -1,0 +1,4 @@
+experiment_id,timestamp,description,model,quantization,num_workers,num_gpus,query_enhancement,max_tokens,total_queries,dprrc_accuracy,dprrc_correct,dprrc_hallucination_rate,dprrc_hallucinations,dprrc_mean_latency_s,dprrc_p95_latency_s,baseline_accuracy,baseline_hallucinations,wall_clock_s,notes
+exp_001,2026-01-07T21:54:00,Phi-3 2-worker baseline,microsoft/Phi-3-mini-4k-instruct,4bit,2,2,true,500,5,1.0,5,0.6,3,63.5,65.1,0.0,0,192,Process-based parallelism with 4-bit Phi-3
+exp_002,2026-01-07T22:05:00,Qwen2-0.5B 4-worker fast,Qwen/Qwen2-0.5B-Instruct,none,4,2,false,150,5,0.0,0,0.0,0,7.9,0.0,0.0,0,25,Small model fails verification - too weak for task
+exp_003,2026-01-07T22:15:00,Phi-3 4-worker optimized,microsoft/Phi-3-mini-4k-instruct,4bit,4,2,false,150,5,1.0,5,0.6,3,21.6,0.0,0.0,0,65,Best config: 4 workers + no enhancement = 3x speedup
