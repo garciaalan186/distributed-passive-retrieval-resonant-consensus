@@ -21,6 +21,8 @@ import time
 import asyncio
 import aiohttp
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, List, Union
 
 from benchmark.domain.interfaces import IQueryExecutor, QueryExecutionResult
@@ -44,6 +46,10 @@ class DPRRCQueryExecutor(IQueryExecutor):
     4. **No Hidden State**: Each query is independent
     5. **Async Support**: Full async support for concurrent execution
     """
+
+    # Persistent thread pool for multi-GPU execution (shared across batches)
+    _gpu_thread_pool: Optional[ThreadPoolExecutor] = None
+    _pool_lock = threading.Lock()
 
     def __init__(
         self,
@@ -284,9 +290,9 @@ class DPRRCQueryExecutor(IQueryExecutor):
         Works in both HTTP and UseCase modes.
 
         Note on Concurrency:
-        - Uses asyncio.gather() for true concurrent execution
-        - Individual query latencies are still measured accurately
-        - Batch execution does not affect per-query timing
+        - In multi-GPU mode: Uses ThreadPoolExecutor for true parallel execution
+          with GPU context assignment (each thread gets a different GPU)
+        - Otherwise: Uses asyncio.gather() for async concurrent execution
 
         Args:
             queries: List of (query_id, query_text) tuples
@@ -295,11 +301,88 @@ class DPRRCQueryExecutor(IQueryExecutor):
         Returns:
             List of QueryExecutionResult in same order as input
         """
-        tasks = [
-            self.execute(query_text, query_id, timestamp_context)
-            for query_id, query_text in queries
-        ]
-        return await asyncio.gather(*tasks)
+        # Check if multi-GPU parallel execution is enabled
+        multi_gpu = os.getenv("ENABLE_MULTI_GPU_WORKERS", "false").lower() == "true"
+
+        if multi_gpu and self._mode == "usecase":
+            # Multi-GPU mode: Use ThreadPoolExecutor for true parallel GPU execution
+            return await self._execute_batch_multi_gpu(queries, timestamp_context)
+        else:
+            # Standard async execution (single GPU or HTTP mode)
+            tasks = [
+                self.execute(query_text, query_id, timestamp_context)
+                for query_id, query_text in queries
+            ]
+            return await asyncio.gather(*tasks)
+
+    @classmethod
+    def _get_gpu_thread_pool(cls) -> ThreadPoolExecutor:
+        """Get or create persistent GPU thread pool."""
+        if cls._gpu_thread_pool is None:
+            with cls._pool_lock:
+                if cls._gpu_thread_pool is None:
+                    num_gpus = int(os.getenv("NUM_WORKER_THREADS", "2"))
+                    cls._gpu_thread_pool = ThreadPoolExecutor(
+                        max_workers=num_gpus,
+                        thread_name_prefix="GPU-Query"
+                    )
+        return cls._gpu_thread_pool
+
+    async def _execute_batch_multi_gpu(
+        self,
+        queries: List[tuple[str, str]],
+        timestamp_context: Optional[str] = None
+    ) -> List[QueryExecutionResult]:
+        """
+        Execute queries in parallel using persistent ThreadPoolExecutor with GPU pinning.
+
+        Each query is assigned to a GPU in round-robin fashion, and the
+        SLMFactory GPU context is set per-thread for proper GPU routing.
+
+        The thread pool is persistent to keep models loaded across batches.
+        """
+        num_gpus = int(os.getenv("NUM_WORKER_THREADS", "2"))
+        loop = asyncio.get_event_loop()
+        executor = self._get_gpu_thread_pool()
+
+        futures = []
+        for idx, (query_id, query_text) in enumerate(queries):
+            gpu_id = idx % num_gpus
+            future = loop.run_in_executor(
+                executor,
+                self._execute_query_on_gpu,
+                query_text,
+                query_id,
+                timestamp_context,
+                gpu_id
+            )
+            futures.append(future)
+
+        # Wait for all queries to complete
+        results = await asyncio.gather(*futures)
+
+        return results
+
+    def _execute_query_on_gpu(
+        self,
+        query: str,
+        query_id: str,
+        timestamp_context: Optional[str],
+        gpu_id: int
+    ) -> QueryExecutionResult:
+        """
+        Execute a single query on a specific GPU (runs in ThreadPoolExecutor).
+
+        Sets GPU context for this thread before execution so all SLM calls
+        use the assigned GPU. Context is not cleared since threads are reused.
+        """
+        from dpr_rc.infrastructure.slm import SLMFactory
+
+        # Set GPU context for this thread (persists for thread reuse)
+        SLMFactory.set_gpu_context(gpu_id)
+
+        # Run the async execute method synchronously in this thread
+        return asyncio.run(self.execute(query, query_id, timestamp_context))
 
     @property
     def executor_id(self) -> str:

@@ -30,12 +30,14 @@ os.environ["SLM_SERVICE_URL"] = "http://localhost:8081"
 os.environ["PASSIVE_WORKER_URL"] = "http://localhost:8082"
 
 # Tier 1 Optimization: Parallel query execution
-# DISABLED: Singleton pattern causes contention - need refactoring for true parallel
+# DISABLED: asyncio.run() overhead in threads causes 2x slowdown vs sequential
+# Future work: Use synchronous execution or process-based parallelism
 os.environ["ENABLE_PARALLEL_QUERIES"] = "false"
-os.environ["MAX_CONCURRENT_QUERIES"] = "2"  # Reserved for future use
+os.environ["MAX_CONCURRENT_QUERIES"] = "2"
 
 # Tier 3B Optimization: Multi-GPU parallel shard processing
-# DISABLED: 4-bit accuracy verified (100%), but singleton pattern limits parallelism
+# DISABLED: Infrastructure ready but parallel queries cause slowdown
+# GPU pool pattern implemented in SLMFactory for future optimization
 os.environ["ENABLE_MULTI_GPU_WORKERS"] = "false"
 os.environ["NUM_WORKER_THREADS"] = "1"
 

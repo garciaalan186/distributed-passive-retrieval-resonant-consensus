@@ -52,9 +52,17 @@ class TransformersBackend:
                 bnb_4bit_quant_type="nf4"
             )
             load_kwargs["quantization_config"] = bnb_config
-            # 4-bit models must use device_map for automatic placement
-            load_kwargs["device_map"] = device_map or "auto"
+            # 4-bit models use device_map for placement
+            # For specific GPU (cuda:N), use device map to pin to that GPU
+            # For generic "cuda", use "auto" for automatic placement
+            if device.startswith("cuda:"):
+                gpu_id = int(device.split(":")[1])
+                load_kwargs["device_map"] = {"": gpu_id}
+            else:
+                load_kwargs["device_map"] = device_map or "auto"
             self.model = AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs)
+            # Update device to match where model actually is
+            self.device = self.model.device
         elif device_map:
             load_kwargs["device_map"] = device_map
             self.model = AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs)

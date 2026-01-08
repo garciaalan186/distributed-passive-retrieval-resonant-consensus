@@ -20,29 +20,39 @@ class DirectSLMClient:
     Direct client for SLM service verification.
 
     Implements ISLMClient interface using in-process SLM Engine.
+
+    In multi-GPU mode, each call gets the engine from the factory based on
+    the current thread's GPU context (set by SLMFactory.set_gpu_context()).
     """
 
     def __init__(
         self,
         worker_id: str = "unknown",
-        slm_service_url: str = None, # Ignored, but kept for signature compatibility
-        timeout: int = 30, # Ignored
+        slm_service_url: str = None,  # Ignored, but kept for signature compatibility
+        timeout: int = 30,  # Ignored
     ):
         """
         Initialize Direct SLM client.
         """
         self.worker_id = worker_id
         self.logger = StructuredLogger(ComponentType.PASSIVE_WORKER)
-        
-        # Lazy load engine
-        self._engine = None
+        self._engine_initialized = False
 
     @property
     def engine(self):
-        if self._engine is None:
+        """
+        Get inference engine from factory.
+
+        In multi-GPU mode: Returns GPU-specific engine based on thread context.
+        In single-GPU mode: Returns cached singleton engine.
+
+        The factory handles all caching - we don't cache here to support
+        proper GPU context switching in multi-GPU mode.
+        """
+        if not self._engine_initialized:
             self.logger.logger.info("Initializing Direct SLM Engine...")
-            self._engine = SLMFactory.create_from_env()
-        return self._engine
+            self._engine_initialized = True
+        return SLMFactory.get_engine()
 
     def verify(
         self,

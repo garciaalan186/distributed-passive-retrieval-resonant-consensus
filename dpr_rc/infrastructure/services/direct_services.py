@@ -24,16 +24,25 @@ class DirectSLMService(ISLMService):
     """
     In-process implementation of SLM service.
     Calls the InferenceEngine directly.
+
+    In multi-GPU mode, each call gets the engine from the factory based on
+    the current thread's GPU context (set by SLMFactory.set_gpu_context()).
     """
     def __init__(self):
-        # Lazy load engine
-        self._engine = None
+        self._initialized = False
 
     @property
     def engine(self):
-        if self._engine is None:
-            self._engine = SLMFactory.create_from_env()
-        return self._engine
+        """
+        Get inference engine from factory.
+
+        The factory handles all caching - we don't cache here to support
+        proper GPU context switching in multi-GPU mode.
+        """
+        if not self._initialized:
+            print("Initializing DirectSLMService engine...")
+            self._initialized = True
+        return SLMFactory.get_engine()
 
     def enhance_query(
         self,
@@ -281,15 +290,15 @@ class DirectWorkerService(IWorkerService):
         Synchronous shard processing for thread pool execution.
 
         This method runs in a worker thread and processes a single shard
-        using a GPU-pinned SLM instance from thread-local storage.
+        using a GPU-pinned SLM instance from the GPU pool.
         """
-        # Set thread-local GPU assignment for SLMFactory
-        from dpr_rc.infrastructure.slm import SLMFactory
-        SLMFactory._thread_local.gpu_id = gpu_id
+        # Set GPU context for this thread - all SLMFactory.get_engine() calls
+        # in this thread will use the engine for this GPU
+        SLMFactory.set_gpu_context(gpu_id)
 
         # Get or create use case for this shard
         # The use case will create DirectSLMClient which will use
-        # SLMFactory.create_from_env(), which will now use the thread-local GPU
+        # SLMFactory.get_engine(), which returns the GPU-specific engine
         use_case = self._get_use_case_for_shard(shard_id)
 
         # Create RFI request
