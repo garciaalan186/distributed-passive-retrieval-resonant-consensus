@@ -439,7 +439,7 @@ class Event:
 
 @dataclass
 class Query:
-    """A benchmark query with ground truth"""
+    """A benchmark query with ground truth and per-query validation criteria."""
     id: str
     question: str
     query_type: str
@@ -448,9 +448,39 @@ class Query:
     expected_disputed: List[Dict]
     expected_sources: List[str]
     difficulty: str
-    
+    # Per-query validation criteria (new fields with defaults for backward compat)
+    required_terms: List[str] = field(default_factory=list)  # Terms that MUST appear
+    forbidden_terms: List[str] = field(default_factory=list)  # Terms that MUST NOT appear
+    validation_pattern: Optional[str] = None  # Optional regex for response structure
+
     def to_dict(self):
-        return asdict(self)
+        d = asdict(self)
+        # Ensure new fields are always present
+        d.setdefault('required_terms', [])
+        d.setdefault('forbidden_terms', [])
+        d.setdefault('validation_pattern', None)
+        return d
+
+
+# Real-world terms that indicate hallucination in the synthetic alternate universe
+REAL_WORLD_FORBIDDEN_TERMS = frozenset({
+    # Financial/business terms (alternate physics has no funding/grants)
+    "grant", "funding", "investment", "budget", "capital", "venture",
+    "investor", "shareholder", "profit", "revenue",
+    # Real physics terms (alternate universe uses different terminology)
+    "electron", "proton", "neutron", "quark", "photon", "graviton",
+    "higgs", "neutrino", "muon", "gluon", "meson", "hadron",
+    "quantum mechanics", "general relativity", "string theory",
+    # Real institutions
+    "cern", "nasa", "mit", "stanford", "harvard", "cambridge",
+    "lhc", "ligo", "fermilab", "slac",
+    # Real scientists
+    "einstein", "feynman", "hawking", "dirac", "bohr", "heisenberg",
+    "schrodinger", "planck", "newton", "maxwell",
+    # AI/chatbot hallucination indicators
+    "unfortunately", "i cannot", "i don't have", "my knowledge",
+    "as an ai", "language model", "training data", "i apologize"
+})
 
 
 class SyntheticHistoryGeneratorV2:
@@ -528,7 +558,45 @@ class SyntheticHistoryGeneratorV2:
                 for d in self.domains
             }
         }
-        
+
+    def _get_all_valid_terms(self) -> set:
+        """Get all valid synthetic terms from physics and domains."""
+        terms = set()
+
+        # Physics terms
+        terms.update(self.physics.particles.keys())
+        terms.update(self.physics.constants.keys())
+        terms.update(self.physics.phenomena.keys())
+        terms.update(self.physics.units.values())
+
+        # Domain terms
+        for domain in self.domains:
+            terms.add(domain.name)
+            # Add individual words from multi-word domain names
+            terms.update(domain.name.split())
+            terms.update(domain.key_concepts.keys())
+            terms.update(domain.metrics.keys())
+
+        return terms
+
+    def _extract_terms_from_events(self, event_ids: List[str]) -> List[str]:
+        """Extract synthetic terms from event content for required_terms validation."""
+        valid_terms = self._get_all_valid_terms()
+        found_terms = set()
+
+        event_map = {e.id: e for e in self.events}
+
+        for event_id in event_ids:
+            event = event_map.get(event_id)
+            if event:
+                # Tokenize and check each word
+                for word in event.content.split():
+                    clean = word.strip('.,!?;:()"\'-')
+                    if clean in valid_terms:
+                        found_terms.add(clean)
+
+        return list(found_terms)
+
     def _generate_timestamp(self, year: int) -> str:
         """Generate random timestamp within a year"""
         month = self.rng.randint(1, 12)
@@ -829,6 +897,7 @@ class SyntheticHistoryGeneratorV2:
                 ]
                 
                 if year_events:
+                    event_ids = [e.id for e in year_events[:5]]
                     self.queries.append(Query(
                         id=f"temporal_{domain.name}_{year}".replace(" ", "_"),
                         question=f"What was the status of {domain.name} research in {year}?",
@@ -836,8 +905,10 @@ class SyntheticHistoryGeneratorV2:
                         timestamp_context=f"{year}-12-31",
                         expected_consensus=[],
                         expected_disputed=[],
-                        expected_sources=[e.id for e in year_events[:5]],
-                        difficulty="easy"
+                        expected_sources=event_ids,
+                        difficulty="easy",
+                        required_terms=self._extract_terms_from_events(event_ids),
+                        forbidden_terms=list(REAL_WORLD_FORBIDDEN_TERMS)
                     ))
         
         # Consensus queries
@@ -852,6 +923,9 @@ class SyntheticHistoryGeneratorV2:
             ]
             
             if consensus_claims or disputed_claims:
+                # Extract relevant events for this domain to use for term extraction
+                domain_events = [e for e in self.events if e.topic == domain.name]
+                domain_event_ids = [e.id for e in domain_events[:10]]
                 self.queries.append(Query(
                     id=f"consensus_{domain.name}".replace(" ", "_"),
                     question=f"What findings about {domain.name} are agreed upon by all perspectives, and what remains disputed?",
@@ -862,8 +936,10 @@ class SyntheticHistoryGeneratorV2:
                         {"claim_id": c.id, "perspective_views": c.perspective_views}
                         for c in disputed_claims
                     ],
-                    expected_sources=[],
-                    difficulty="medium"
+                    expected_sources=domain_event_ids,
+                    difficulty="medium",
+                    required_terms=self._extract_terms_from_events(domain_event_ids),
+                    forbidden_terms=list(REAL_WORLD_FORBIDDEN_TERMS)
                 ))
         
         # Perspective queries
@@ -873,6 +949,7 @@ class SyntheticHistoryGeneratorV2:
                 p2_events = [e for e in self.events if e.topic == domain.name and e.perspective == p2]
                 
                 if p1_events and p2_events:
+                    event_ids = [e.id for e in (p1_events[:3] + p2_events[:3])]
                     self.queries.append(Query(
                         id=f"perspective_{domain.name}_{p1.value}_{p2.value}".replace(" ", "_"),
                         question=f"How do {p1.value} and {p2.value} perspectives differ on {domain.name}?",
@@ -880,8 +957,10 @@ class SyntheticHistoryGeneratorV2:
                         timestamp_context=f"{self.end_year}-12-31",
                         expected_consensus=[],
                         expected_disputed=[],
-                        expected_sources=[e.id for e in (p1_events[:3] + p2_events[:3])],
-                        difficulty="hard"
+                        expected_sources=event_ids,
+                        difficulty="hard",
+                        required_terms=self._extract_terms_from_events(event_ids),
+                        forbidden_terms=list(REAL_WORLD_FORBIDDEN_TERMS)
                     ))
         
         print(f"  Generated {len(self.queries)} queries")

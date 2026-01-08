@@ -906,21 +906,46 @@ class ResearchBenchmarkSuite:
                 if correctness_result.is_correct:
                     dprrc_correct += 1
 
-                # Queue hallucination check for batch processing
-                hallucination_check_requests.append({
-                    "query": query.get("question", ""),
-                    "system_response": response,
-                    "ground_truth": ground_truth,
-                    "valid_terms": self._extract_valid_terms(glossary),
-                    "confidence": confidence,
-                    "trace_id": dprrc.get("query_id", f"dprrc_{i}")
-                })
-                request_metadata.append({
-                    "type": "dprrc",
-                    "index": i,
-                    "query_id": dprrc.get("query_id"),
-                    "confidence": confidence
-                })
+                # Per-query validation (if criteria provided)
+                required_terms = query.get("required_terms", [])
+                forbidden_terms = query.get("forbidden_terms", [])
+
+                if required_terms or forbidden_terms:
+                    # Use deterministic per-query validation instead of SLM
+                    validation_result = EvaluationService.evaluate_with_validation_criteria(
+                        response=response,
+                        required_terms=required_terms,
+                        forbidden_terms=forbidden_terms,
+                        validation_pattern=query.get("validation_pattern")
+                    )
+
+                    if not validation_result["hallucination_passed"]:
+                        # Forbidden terms found - add to hallucinations
+                        dprrc_hallucinations.append({
+                            "query_id": dprrc.get("query_id", f"dprrc_{i}"),
+                            "type": "forbidden_term",
+                            "severity": "high",
+                            "explanation": f"Response contains forbidden real-world terms: {', '.join(validation_result['forbidden_found'][:5])}",
+                            "flagged_content": validation_result["forbidden_found"][:10],
+                            "confidence": confidence,
+                            "validation_type": "per_query"
+                        })
+                else:
+                    # Fall back to SLM-based hallucination detection
+                    hallucination_check_requests.append({
+                        "query": query.get("question", ""),
+                        "system_response": response,
+                        "ground_truth": ground_truth,
+                        "valid_terms": self._extract_valid_terms(glossary),
+                        "confidence": confidence,
+                        "trace_id": dprrc.get("query_id", f"dprrc_{i}")
+                    })
+                    request_metadata.append({
+                        "type": "dprrc",
+                        "index": i,
+                        "query_id": dprrc.get("query_id"),
+                        "confidence": confidence
+                    })
 
                 dprrc_latencies.append(dprrc.get("latency_ms", 0))
 
@@ -939,20 +964,44 @@ class ResearchBenchmarkSuite:
                 if correctness_result.is_correct:
                     baseline_correct += 1
 
-                # Queue hallucination check for batch processing
-                hallucination_check_requests.append({
-                    "query": query.get("question", ""),
-                    "system_response": response,
-                    "ground_truth": ground_truth,
-                    "valid_terms": self._extract_valid_terms(glossary),
-                    "confidence": 1.0,  # Baseline is always confident
-                    "trace_id": baseline.get("query_id", f"baseline_{i}")
-                })
-                request_metadata.append({
-                    "type": "baseline",
-                    "index": i,
-                    "query_id": baseline.get("query_id")
-                })
+                # Per-query validation (if criteria provided)
+                required_terms = query.get("required_terms", [])
+                forbidden_terms = query.get("forbidden_terms", [])
+
+                if required_terms or forbidden_terms:
+                    # Use deterministic per-query validation instead of SLM
+                    validation_result = EvaluationService.evaluate_with_validation_criteria(
+                        response=response,
+                        required_terms=required_terms,
+                        forbidden_terms=forbidden_terms,
+                        validation_pattern=query.get("validation_pattern")
+                    )
+
+                    if not validation_result["hallucination_passed"]:
+                        # Forbidden terms found - add to hallucinations
+                        baseline_hallucinations.append({
+                            "query_id": baseline.get("query_id", f"baseline_{i}"),
+                            "type": "forbidden_term",
+                            "severity": "high",
+                            "explanation": f"Response contains forbidden real-world terms: {', '.join(validation_result['forbidden_found'][:5])}",
+                            "flagged_content": validation_result["forbidden_found"][:10],
+                            "validation_type": "per_query"
+                        })
+                else:
+                    # Fall back to SLM-based hallucination detection
+                    hallucination_check_requests.append({
+                        "query": query.get("question", ""),
+                        "system_response": response,
+                        "ground_truth": ground_truth,
+                        "valid_terms": self._extract_valid_terms(glossary),
+                        "confidence": 1.0,  # Baseline is always confident
+                        "trace_id": baseline.get("query_id", f"baseline_{i}")
+                    })
+                    request_metadata.append({
+                        "type": "baseline",
+                        "index": i,
+                        "query_id": baseline.get("query_id")
+                    })
 
                 baseline_latencies.append(baseline.get("latency_ms", 0))
 

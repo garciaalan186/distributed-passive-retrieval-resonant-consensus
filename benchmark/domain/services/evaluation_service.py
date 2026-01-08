@@ -225,6 +225,82 @@ class EvaluationService:
         }
 
     @staticmethod
+    def evaluate_with_validation_criteria(
+        response: str,
+        required_terms: List[str],
+        forbidden_terms: List[str],
+        validation_pattern: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Deterministic per-query validation using required/forbidden terms.
+
+        This provides precise hallucination detection by checking:
+        1. Grounding: Required synthetic terms must appear (entity recall)
+        2. Hallucination: Forbidden real-world terms must not appear
+
+        Args:
+            response: The system's response text
+            required_terms: Terms that MUST appear in the response (grounding check)
+            forbidden_terms: Terms that MUST NOT appear (hallucination check)
+            validation_pattern: Optional regex pattern for response structure
+
+        Returns:
+            Dict with:
+                - grounding_passed: bool (all required terms found)
+                - hallucination_passed: bool (no forbidden terms found)
+                - missing_required: List[str] (required terms not in response)
+                - forbidden_found: List[str] (forbidden terms found in response)
+                - pattern_matched: Optional[bool] (if pattern was checked)
+                - overall_passed: bool (all checks passed)
+
+        Implementation Notes:
+            - Case-insensitive matching for robustness
+            - Checks word boundaries to avoid partial matches
+            - Pattern matching uses re.search for flexibility
+        """
+        import re
+
+        response_lower = response.lower()
+
+        # Check required terms (grounding)
+        missing_required = []
+        for term in required_terms:
+            if term.lower() not in response_lower:
+                missing_required.append(term)
+
+        grounding_passed = len(missing_required) == 0
+
+        # Check forbidden terms (hallucination)
+        forbidden_found = []
+        for term in forbidden_terms:
+            if term.lower() in response_lower:
+                forbidden_found.append(term)
+
+        hallucination_passed = len(forbidden_found) == 0
+
+        # Check optional pattern
+        pattern_matched = None
+        if validation_pattern:
+            try:
+                pattern_matched = bool(re.search(validation_pattern, response, re.IGNORECASE))
+            except re.error:
+                pattern_matched = None  # Invalid pattern
+
+        # Overall result
+        overall_passed = grounding_passed and hallucination_passed
+        if pattern_matched is not None:
+            overall_passed = overall_passed and pattern_matched
+
+        return {
+            "grounding_passed": grounding_passed,
+            "hallucination_passed": hallucination_passed,
+            "missing_required": missing_required,
+            "forbidden_found": forbidden_found,
+            "pattern_matched": pattern_matched,
+            "overall_passed": overall_passed
+        }
+
+    @staticmethod
     def _extract_options(response: str, min_length: int = 10) -> List[str]:
         """
         Extract distinct options/alternatives from a response.
