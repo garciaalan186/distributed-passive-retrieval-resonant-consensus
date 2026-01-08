@@ -113,7 +113,7 @@ class DirectWorkerService(IWorkerService):
         
     def _get_use_case(self, epoch_year: int):
         """Get or create a use case for the specific epoch."""
-        
+
         # Determine strict sharding assignment
         if epoch_year >= 2020:
             cluster_id = "C_RECENT"
@@ -121,28 +121,22 @@ class DirectWorkerService(IWorkerService):
         else:
             cluster_id = "C_OLDER"
             worker_id = "worker-older-01"
-            
+
         if cluster_id in self._use_cases:
             return self._use_cases[cluster_id]
-            
-        # Create new use case with correct identity
-        # We need to gather standard env config first
-        bucket_name = os.getenv("HISTORY_BUCKET")
+
+        # Create use case via factory
         slm_url = os.getenv("SLM_SERVICE_URL", "http://localhost:8081")
-        scale = os.getenv("HISTORY_SCALE", "medium")
         embedding_model = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
-        
-        # Create via factory with explicit overrides
+
         use_case = PassiveAgentFactory.create_process_rfi_use_case(
-            bucket_name=bucket_name,
             slm_url=slm_url,
             worker_id=worker_id,
-            cluster_id=cluster_id, # EXPLICITLY SET CORRECT CLUSTER
-            scale=scale,
+            cluster_id=cluster_id,
             embedding_model=embedding_model,
             default_epoch_year=epoch_year
         )
-        
+
         self._use_cases[cluster_id] = use_case
         return use_case
 

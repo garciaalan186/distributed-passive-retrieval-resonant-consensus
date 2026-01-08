@@ -9,12 +9,7 @@ LAZY LOADING ARCHITECTURE:
 - Workers start with EMPTY vector stores
 - When an RFI arrives with target_shards, worker loads that shard on-demand
 - Shards are cached locally after first load (no re-download)
-- Pre-computed embeddings are loaded from GCS (no embedding computation at runtime)
-
-GCS Data Source:
-    gs://{HISTORY_BUCKET}/
-    ├── raw/{scale}/shards/shard_{year}.json       # Fallback: raw text
-    └── embeddings/{model}/shards/shard_{year}.npz  # Primary: pre-computed vectors
+- Pre-computed embeddings are loaded from local dataset (no embedding computation at runtime)
 
 REFACTORED ARCHITECTURE (SOLID):
 This file is now a THIN FACADE - it only handles:
@@ -29,9 +24,6 @@ All business logic is in:
 """
 
 import os
-import time
-import redis
-import threading
 from typing import Dict, Any, List, Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -46,15 +38,11 @@ from .logging_utils import StructuredLogger, ComponentType
 from .debug_utils import (
     debug_rfi_received,
     debug_vote_created,
-    debug_worker_no_results,
-    debug_log,
 )
 from .infrastructure.passive_agent import PassiveAgentFactory
 from .application.passive_agent import ProcessRFIRequest, ProcessRFIResponse
 
 # Configuration
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 WORKER_ID = os.getenv("HOSTNAME", f"worker-{os.getpid()}")
 WORKER_EPOCH = os.getenv("WORKER_EPOCH", "2020")  # Default epoch
 HISTORY_BUCKET = os.getenv("HISTORY_BUCKET", None)
@@ -63,11 +51,6 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 CLUSTER_ID = os.getenv("CLUSTER_ID", "cluster-alpha")
 
 logger = StructuredLogger(ComponentType.PASSIVE_WORKER)
-redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
-
-RFI_STREAM = "dpr:rfi"
-GROUP_NAME = "passive_workers"
-CONSUMER_NAME = WORKER_ID
 
 # Global use case instance
 _use_case: Optional[Any] = None
@@ -84,17 +67,8 @@ def get_use_case():
 # FastAPI Application
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifespan context manager - starts worker thread on startup (Redis mode only)"""
-    # Only start Redis worker thread if not using HTTP mode
-    use_http_workers = os.getenv("USE_HTTP_WORKERS", "false").lower() == "true"
-
-    if not use_http_workers:
-        worker_thread = threading.Thread(target=run_worker_loop, daemon=True)
-        worker_thread.start()
-        logger.logger.info(f"Passive Worker {WORKER_ID} started (Redis mode, lazy loading)")
-    else:
-        logger.logger.info(f"Passive Worker {WORKER_ID} started (HTTP mode, lazy loading)")
-
+    """Lifespan context manager for FastAPI startup/shutdown"""
+    logger.logger.info(f"Passive Worker {WORKER_ID} started (HTTP mode, lazy loading)")
     yield
     logger.logger.info(f"Passive Worker {WORKER_ID} shutting down")
 
@@ -173,10 +147,7 @@ def process_rfi_http(request: RFIRequest):
     """
     HTTP endpoint for processing RFI requests directly.
 
-    This enables Cloud Run deployments without Redis by allowing
-    the Active Controller to call workers directly via HTTP.
-
-    Returns votes synchronously instead of publishing to Redis.
+    Returns votes synchronously.
     """
     use_case = get_use_case()
 
@@ -227,94 +198,12 @@ def process_rfi_http(request: RFIRequest):
     for vote in response.votes:
         debug_vote_created(WORKER_ID, request.trace_id, vote)
 
-    # Also publish to Redis if available (for hybrid mode)
-    try:
-        for vote in response.votes:
-            redis_client.publish(
-                f"dpr:responses:{request.trace_id}",
-                __import__('json').dumps(vote)
-            )
-    except Exception:
-        pass  # Redis not available in HTTP-only mode
-
     # Return votes as HTTP response
     return VoteResponse(
         worker_id=WORKER_ID,
         votes=response.votes,
         shards_queried=request.target_shards or [f"shard_{WORKER_EPOCH}"],
     )
-
-
-def run_worker_loop():
-    """Main worker loop - processes RFIs from Redis stream"""
-    use_case = get_use_case()
-
-    # Initialize Stream Group
-    try:
-        redis_client.xgroup_create(RFI_STREAM, GROUP_NAME, mkstream=True)
-    except redis.exceptions.ResponseError as e:
-        if "BUSYGROUP" not in str(e):
-            raise
-
-    logger.logger.info(f"Passive Worker {WORKER_ID} listening on {RFI_STREAM}...")
-
-    while True:
-        try:
-            streams = redis_client.xreadgroup(
-                GROUP_NAME, CONSUMER_NAME, {RFI_STREAM: ">"}, count=1, block=2000
-            )
-
-            if streams:
-                for stream, messages in streams:
-                    for message_id, data in messages:
-                        try:
-                            # Convert Redis data to DTO
-                            rfi_request = ProcessRFIRequest.from_dict(data)
-
-                            # DEBUG: RFI received
-                            debug_rfi_received(
-                                rfi_request.trace_id, WORKER_ID, data
-                            )
-
-                            # Execute use case
-                            response = use_case.execute(rfi_request)
-
-                            # Publish votes to Redis
-                            for vote in response.votes:
-                                redis_client.publish(
-                                    f"dpr:responses:{rfi_request.trace_id}",
-                                    __import__('json').dumps(vote),
-                                )
-
-                                # DEBUG: Vote created
-                                debug_vote_created(
-                                    WORKER_ID, rfi_request.trace_id, vote
-                                )
-
-                            # If no votes, send debug message
-                            if not response.votes:
-                                debug_worker_no_results(
-                                    WORKER_ID,
-                                    rfi_request.trace_id,
-                                    rfi_request.target_shards,
-                                    response.message,
-                                )
-
-                            # Acknowledge message
-                            redis_client.xack(RFI_STREAM, GROUP_NAME, message_id)
-
-                        except Exception as e:
-                            logger.logger.error(f"Error processing RFI: {e}")
-                            import traceback
-
-                            traceback.print_exc()
-
-        except redis.exceptions.ConnectionError as e:
-            logger.logger.error(f"Redis connection error: {e}")
-            time.sleep(5)
-        except Exception as e:
-            logger.logger.error(f"Worker loop error: {e}")
-            time.sleep(1)
 
 
 if __name__ == "__main__":

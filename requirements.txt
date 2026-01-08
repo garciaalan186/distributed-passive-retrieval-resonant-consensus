@@ -1,9 +1,4 @@
-# GCP services
-google-cloud-storage==2.14.0
-google-cloud-logging==3.9.0
-
 # Core dependencies
-redis==5.0.1
 chromadb==0.4.22
 pydantic==2.5.3
 numpy==1.26.3

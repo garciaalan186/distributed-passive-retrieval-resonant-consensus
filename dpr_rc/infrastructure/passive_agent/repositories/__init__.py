@@ -2,7 +2,7 @@
 Infrastructure Repositories for Passive Agent
 """
 
-from .gcs_shard_repository import GCSShardRepository
 from .chromadb_repository import ChromaDBRepository
+from .local_shard_repository import LocalShardRepository
 
-__all__ = ["GCSShardRepository", "ChromaDBRepository"]
+__all__ = ["ChromaDBRepository", "LocalShardRepository"]

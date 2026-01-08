@@ -71,7 +71,7 @@ except ImportError:
     HAS_GCS = False
     print("Warning: google-cloud-storage not installed. Install with: pip install google-cloud-storage")
 
-from .synthetic_history import SyntheticHistoryGeneratorV2
+from benchmark.synthetic import SyntheticHistoryGeneratorV2
 
 # Tempo-normalized sharding modules
 from .segmentation import (
