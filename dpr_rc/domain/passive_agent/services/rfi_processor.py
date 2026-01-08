@@ -173,7 +173,7 @@ class RFIProcessor:
                 )
                 
                 # Confidence from verification
-                adjusted_confidence = verification_result.confidence
+                adjusted_confidence = verification_result.adjusted_confidence
 
                 # RCP v4: Compute binary vote from confidence
                 # Use raw confidence, effectively threshold is 0.0

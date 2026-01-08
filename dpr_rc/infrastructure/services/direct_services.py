@@ -33,16 +33,15 @@ class DirectSLMService(ISLMService):
             self._engine = SLMFactory.create_from_env()
         return self._engine
 
-    async def enhance_query(
+    def enhance_query(
         self,
         query_text: str,
         timestamp_context: Optional[str] = None
     ) -> Dict[str, Any]:
         """Enhance query using local engine instance."""
         try:
-            # Run blocking SLM inference in a separate thread
-            result = await asyncio.to_thread(
-                self.engine.enhance_query,
+            # Call engine directly (blocking call)
+            result = self.engine.enhance_query(
                 query=query_text,
                 timestamp_context=timestamp_context
             )

@@ -159,7 +159,7 @@ class DPRRCQueryExecutor(IQueryExecutor):
                 metadata={
                     "status": response.status,
                     "sources": response.sources,
-                    "resonance_matrix": response.resonance_matrix,
+                    "superposition": response.superposition,
                     "trace_id": query_id,
                     "execution_mode": "usecase",
                     **response.metadata
@@ -368,16 +368,27 @@ def create_dprrc_executor(
     """
     if use_new_executor:
         # UseCase mode: create use case with service dependencies
-        slm_service = HttpSLMService(
-            slm_service_url=slm_url,
-            timeout=timeout,
-            enable_enhancement=enable_query_enhancement
-        )
+        # Check if we should use direct (in-process) services
+        use_direct_services = os.getenv("USE_DIRECT_SERVICES", "false").lower() == "true"
+
+        if use_direct_services:
+            # Direct mode: in-process services (for local benchmarking)
+            from dpr_rc.infrastructure.services import DirectSLMService, DirectWorkerService
+            slm_service = DirectSLMService()
+            worker_service = DirectWorkerService()
+        else:
+            # HTTP mode: remote services (for distributed deployment)
+            slm_service = HttpSLMService(
+                slm_service_url=slm_url,
+                timeout=timeout,
+                enable_enhancement=enable_query_enhancement
+            )
+            worker_service = HttpWorkerService(
+                worker_urls=worker_url,
+                timeout=timeout
+            )
+
         router_service = SimpleRouterService()
-        worker_service = HttpWorkerService(
-            worker_urls=worker_url,
-            timeout=timeout
-        )
 
         use_case = ProcessQueryUseCase(
             slm_service=slm_service,

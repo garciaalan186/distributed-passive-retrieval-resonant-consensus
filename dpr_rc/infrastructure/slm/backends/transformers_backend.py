@@ -21,6 +21,7 @@ class TransformersBackend:
         model_id: str,
         device: str = "cpu",
         torch_dtype: Optional[torch.dtype] = None,
+        device_map: Optional[str] = None,
     ):
         """
         Initialize backend.
@@ -29,6 +30,7 @@ class TransformersBackend:
             model_id: HuggingFace model identifier
             device: Device to run on ("cpu" or "cuda")
             torch_dtype: Optional dtype for model
+            device_map: Optional device map for multi-GPU (e.g., "auto")
         """
         self.model_id = model_id
         self.device = device
@@ -36,13 +38,13 @@ class TransformersBackend:
         # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
 
-        # Load model
-        if torch_dtype:
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_id, torch_dtype=torch_dtype
-            ).to(device)
+        # Load model with optional device_map for multi-GPU
+        load_kwargs = {"torch_dtype": torch_dtype} if torch_dtype else {}
+        if device_map:
+            load_kwargs["device_map"] = device_map
+            self.model = AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs)
         else:
-            self.model = AutoModelForCausalLM.from_pretrained(model_id).to(device)
+            self.model = AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs).to(device)
 
         self.model.eval()  # Set to evaluation mode
 

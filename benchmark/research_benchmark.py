@@ -423,7 +423,7 @@ class ResearchBenchmarkSuite:
                 "sources": result.metadata.get("sources", []),
                 "status": result.metadata.get("status", "SUCCESS"),
                 "execution_mode": result.metadata.get("execution_mode"),
-                "superposition": result.metadata.get("superposition") or result.metadata.get("resonance_matrix")
+                "superposition": result.metadata.get("superposition")
             }, query_dir / "system_output.json")
 
             # Fetch audit trail and exchange history from Cloud Logging (only for HTTP mode)
@@ -442,7 +442,7 @@ class ResearchBenchmarkSuite:
                 "query_id": query_id,
                 "response": result.response,
                 "confidence": result.confidence,
-                "superposition": result.metadata.get("superposition") or result.metadata.get("resonance_matrix"),
+                "superposition": result.metadata.get("superposition"),
                 "latency_ms": result.latency_ms,
                 "success": True
             }
