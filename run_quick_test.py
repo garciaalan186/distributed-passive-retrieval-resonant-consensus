@@ -13,7 +13,7 @@ sys.path.append(os.getcwd())
 os.environ["USE_NEW_EXECUTOR"] = "true"
 os.environ["USE_DIRECT_SERVICES"] = "true"
 os.environ["BENCHMARK_SCALE"] = "mini"
-os.environ["SLM_MODEL"] = "microsoft/Phi-3-mini-4k-instruct"
+os.environ["SLM_MODEL"] = "microsoft/Phi-3-mini-4k-instruct"  # Full-size model (Qwen2 has 0% accuracy)
 os.environ["SLM_TIMEOUT"] = "60"
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 os.environ["ANONYMIZED_TELEMETRY"] = "false"
@@ -35,8 +35,8 @@ os.environ["MAX_CONCURRENT_QUERIES"] = "6"  # Will be used once Tier 3B is valid
 
 # Tier 3B Optimization: Multi-GPU parallel shard processing with ThreadPoolExecutor
 # ENABLED: Baseline accuracy verified, testing 2x speedup with dual GPU
-os.environ["ENABLE_MULTI_GPU_WORKERS"] = "true"  # Tier 3B enabled for multi-GPU parallelization
-os.environ["NUM_WORKER_THREADS"] = "6"  # 3 threads per GPU (RTX 3060 12GB each)
+os.environ["ENABLE_MULTI_GPU_WORKERS"] = "false"  # Disabled - Qwen2 gives 0% accuracy, Phi-3 too large
+os.environ["NUM_WORKER_THREADS"] = "1"  # Sequential processing with Phi-3
 
 from benchmark.research_benchmark import ResearchBenchmarkSuite
 from pathlib import Path
