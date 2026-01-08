@@ -318,26 +318,30 @@ class DPRRCQueryExecutor(IQueryExecutor):
             return await asyncio.gather(*tasks)
 
     @classmethod
-    def _get_gpu_process_pool(cls, num_gpus: int) -> mp.Pool:
+    def _get_gpu_process_pool(cls, num_workers: int, num_gpus: int) -> mp.Pool:
         """
         Get or create persistent GPU process pool.
 
         Each worker process is initialized with a specific GPU assignment
         via CUDA_VISIBLE_DEVICES environment variable.
+
+        Args:
+            num_workers: Number of worker processes to create
+            num_gpus: Number of physical GPUs to distribute workers across
         """
         if cls._gpu_process_pool is None:
             with cls._pool_lock:
                 if cls._gpu_process_pool is None:
-                    print(f"Creating process pool with {num_gpus} GPU workers...")
+                    print(f"Creating process pool with {num_workers} workers across {num_gpus} GPUs...")
 
                     # Use spawn to get clean processes (required for CUDA)
                     ctx = mp.get_context("spawn")
 
-                    # Create pool with initializer for each GPU
+                    # Create pool with initializer for each worker
                     cls._gpu_process_pool = ctx.Pool(
-                        processes=num_gpus,
+                        processes=num_workers,
                         initializer=cls._init_gpu_worker,
-                        initargs=(num_gpus,)
+                        initargs=(num_gpus,)  # Pass actual GPU count for round-robin
                     )
                     print("Process pool created and workers initialized")
 
@@ -349,7 +353,7 @@ class DPRRCQueryExecutor(IQueryExecutor):
         Initialize a worker process with GPU assignment.
 
         Called once when each worker process starts. Uses the worker's
-        process index to determine GPU assignment.
+        process index modulo num_gpus for round-robin GPU assignment.
         """
         import os
 
@@ -360,13 +364,14 @@ class DPRRCQueryExecutor(IQueryExecutor):
         else:
             worker_idx = 0
 
+        # Round-robin assignment: worker 0,2,4... → GPU 0; worker 1,3,5... → GPU 1
         gpu_id = worker_idx % num_gpus
 
         # Set CUDA visibility for this process
         os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
         os.environ["ENABLE_MULTI_GPU_WORKERS"] = "false"  # Single GPU per process
 
-        print(f"Worker {worker_name} assigned to GPU {gpu_id}")
+        print(f"Worker {worker_name} (idx={worker_idx}) assigned to GPU {gpu_id}")
 
         # Pre-load the model
         from dpr_rc.infrastructure.slm import SLMFactory
@@ -385,8 +390,9 @@ class DPRRCQueryExecutor(IQueryExecutor):
         Each query is processed by a worker with its own GPU and model instance.
         This avoids asyncio overhead and enables true parallel GPU execution.
         """
-        num_gpus = int(os.getenv("NUM_WORKER_THREADS", "2"))
-        pool = self._get_gpu_process_pool(num_gpus)
+        num_workers = int(os.getenv("NUM_WORKER_THREADS", "2"))
+        num_gpus = int(os.getenv("NUM_GPUS", "2"))  # Actual GPU count
+        pool = self._get_gpu_process_pool(num_workers, num_gpus)
 
         # Prepare args for each query
         work_items = [

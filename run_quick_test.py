@@ -13,9 +13,10 @@ sys.path.append(os.getcwd())
 os.environ["USE_NEW_EXECUTOR"] = "true"
 os.environ["USE_DIRECT_SERVICES"] = "true"
 os.environ["BENCHMARK_SCALE"] = "mini"
-os.environ["SLM_MODEL"] = "microsoft/Phi-3-mini-4k-instruct"  # Full-size model with 4-bit quantization
-os.environ["SLM_USE_4BIT_QUANTIZATION"] = "true"  # Reduces memory from ~7-8GB to ~2GB
-os.environ["SLM_TIMEOUT"] = "60"
+# Model Configuration - Phi-3-mini with 4-bit for accuracy, optimizations for speed
+os.environ["SLM_MODEL"] = "microsoft/Phi-3-mini-4k-instruct"  # Accurate model
+os.environ["SLM_USE_4BIT_QUANTIZATION"] = "true"  # ~2GB per instance, allows 4 workers
+os.environ["SLM_TIMEOUT"] = "45"
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 os.environ["ANONYMIZED_TELEMETRY"] = "false"
 os.environ["LOCAL_DATASET_PATH"] = "benchmark_results_local/mini/dataset.json"
@@ -23,8 +24,11 @@ os.environ["HISTORY_SCALE"] = "mini"
 os.environ["LOG_LEVEL"] = "INFO"  # Less verbose for quick test
 os.environ["CHROMA_DB_PATH"] = "benchmark_results_local/chroma_db"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["SLM_MAX_TOKENS"] = "500"
-os.environ["SLM_ATTN_IMPL"] = "flash_attention_2"
+os.environ["SLM_MAX_TOKENS"] = "150"  # Reduced from 500 - verification responses are short
+os.environ["SLM_ATTN_IMPL"] = "sdpa"  # Use PyTorch native attention (faster for small models)
+
+# Skip query enhancement - saves one SLM call per query (~50% latency reduction)
+os.environ["ENABLE_QUERY_ENHANCEMENT"] = "false"
 os.environ["CONTROLLER_URL"] = "http://localhost:8080"
 os.environ["SLM_SERVICE_URL"] = "http://localhost:8081"
 os.environ["PASSIVE_WORKER_URL"] = "http://localhost:8082"
@@ -32,12 +36,14 @@ os.environ["PASSIVE_WORKER_URL"] = "http://localhost:8082"
 # Tier 1 Optimization: Parallel query execution
 # ENABLED: Process-based parallelism avoids asyncio overhead
 os.environ["ENABLE_PARALLEL_QUERIES"] = "true"
-os.environ["MAX_CONCURRENT_QUERIES"] = "2"  # 2 parallel processes
+os.environ["MAX_CONCURRENT_QUERIES"] = "4"  # 4 parallel processes
 
 # Tier 3B Optimization: Multi-GPU parallel processing
 # ENABLED: Each process gets its own GPU via CUDA_VISIBLE_DEVICES
+# With 2 GPUs and Qwen2-0.5B (~0.5GB), we can run 4 workers (2 per GPU)
 os.environ["ENABLE_MULTI_GPU_WORKERS"] = "true"
-os.environ["NUM_WORKER_THREADS"] = "2"  # 2 GPU workers
+os.environ["NUM_WORKER_THREADS"] = "4"  # 4 GPU workers total
+os.environ["NUM_GPUS"] = "2"  # Actual number of GPUs for round-robin
 
 from benchmark.research_benchmark import ResearchBenchmarkSuite
 from pathlib import Path
