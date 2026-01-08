@@ -9,7 +9,7 @@ compatibility with the existing synthetic history generation logic.
 
 from typing import List, Dict, Any, Optional
 from benchmark.domain.interfaces import IDatasetGenerator, BenchmarkDataset
-from benchmark.synthetic_history import SyntheticHistoryGeneratorV2
+from benchmark.synthetic import SyntheticHistoryGeneratorV2
 
 
 class SyntheticDatasetGenerator(IDatasetGenerator):

@@ -171,6 +171,8 @@ class RoutingService:
         shard_pattern = re.compile(
             r'shard_(\d+)_(\d{4}-\d{2})_(\d{4}-\d{2})'
         )
+        # Legacy/Simple format: shard_{year}
+        legacy_pattern = re.compile(r'shard_(\d{4})(\.json)?$')
 
         shards = []
         for name in shard_names:
@@ -187,5 +189,16 @@ class RoutingService:
                     start_date=start_date,
                     end_date=end_date
                 ))
+                continue
 
+            # Try legacy format
+            match = legacy_pattern.search(filename)
+            if match:
+                year = match.group(1)
+                shard_id = f"shard_{year}"
+                shards.append(ShardInfo(
+                    shard_id=shard_id,
+                    start_date=f"{year}-01",
+                    end_date=f"{year}-12"
+                ))
         return shards

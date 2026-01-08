@@ -17,39 +17,22 @@ import os
 from typing import Optional, Any
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from redis import Redis
 
 from .models import QueryRequest, RetrievalResult
 from .logging_utils import StructuredLogger, ComponentType
 from .debug_utils import (
     debug_query_received,
-    debug_query_enhancement,
-    debug_routing,
-    debug_consensus_calculation,
     debug_final_response,
 )
 from .infrastructure.active_agent import ActiveAgentFactory
 from .application.active_agent import QueryRequestDTO
 
 # Configuration
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 SLM_SERVICE_URL = os.getenv("SLM_SERVICE_URL", "http://localhost:8081")
 PASSIVE_WORKER_URL = os.getenv("PASSIVE_WORKER_URL", "")
-USE_HTTP_WORKERS = os.getenv("USE_HTTP_WORKERS", "true").lower() == "true"
 ENABLE_QUERY_ENHANCEMENT = os.getenv("ENABLE_QUERY_ENHANCEMENT", "true").lower() == "true"
 
 logger = StructuredLogger(ComponentType.ACTIVE_CONTROLLER)
-
-# Initialize Redis client (may fail in HTTP-only mode)
-try:
-    redis_client = Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
-    redis_client.ping()
-    REDIS_AVAILABLE = True
-except Exception as e:
-    logger.logger.warning(f"Redis not available: {e}. Using HTTP-only mode.")
-    redis_client = None
-    REDIS_AVAILABLE = False
 
 # Global use case instance
 _use_case: Optional[Any] = None
@@ -67,9 +50,7 @@ def get_use_case():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for FastAPI startup/shutdown"""
-    logger.logger.info(
-        f"Active Controller Started (Redis: {REDIS_AVAILABLE}, HTTP Workers: {USE_HTTP_WORKERS})"
-    )
+    logger.logger.info("Active Controller Started")
     yield
     logger.logger.info("Active Controller Shutting Down")
 
@@ -85,8 +66,6 @@ def health_check():
         "component": "active_controller",
         "query_enhancement": ENABLE_QUERY_ENHANCEMENT,
         "slm_service": SLM_SERVICE_URL,
-        "redis_available": REDIS_AVAILABLE,
-        "http_workers": USE_HTTP_WORKERS,
         "passive_worker_url": PASSIVE_WORKER_URL,
     }
 

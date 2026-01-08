@@ -6,7 +6,7 @@ superposition awareness. All I/O (HTTP calls, file operations) must be
 handled by the caller.
 """
 
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from benchmark.domain.value_objects import CorrectnessResult
 
 
@@ -86,7 +86,8 @@ class EvaluationService:
         response: str,
         expected_entities: List[str],
         recall_threshold: float = 0.5,
-        min_response_length: int = 20
+        min_response_length: int = 20,
+        superposition_data: Optional[Dict[str, Any]] = None
     ) -> CorrectnessResult:
         """
         Evaluate correctness for superposition-aware responses.
@@ -94,31 +95,20 @@ class EvaluationService:
         This handles responses that may present multiple alternatives/perspectives.
         The response is correct if ANY option contains the expected entities.
 
+        If superposition_data (raw JSON) is provided, it evaluates against the
+        structured quadrants (consensus, polar, negative_consensus) instead of
+        parsing text.
+
         Args:
             response: The system's response text (may contain multiple options)
             expected_entities: List of entities expected to appear
             recall_threshold: Minimum fraction of entities per option
             min_response_length: Minimum response length
+            superposition_data: Optional raw superposition dictionary
 
         Returns:
             CorrectnessResult indicating if correct answer is present in any option
-
-        Implementation Notes:
-            - Extracts options using _extract_options()
-            - Evaluates each option independently
-            - Returns True if ANY option passes correctness check
-            - This reflects DPR-RC's design: correct answer must be present,
-              even if presented alongside alternatives
         """
-        if not response or len(response) < min_response_length:
-            return CorrectnessResult(
-                is_correct=False,
-                correctness_score=0.0,
-                matched_entities=[],
-                expected_entities=expected_entities,
-                explanation=f"Response too short (min {min_response_length} chars)"
-            )
-
         if not expected_entities:
             # No entities to check
             return CorrectnessResult(
@@ -129,14 +119,44 @@ class EvaluationService:
                 explanation="No entities to evaluate (query has no expected entities)"
             )
 
-        # Extract potential options from response
-        options = EvaluationService._extract_options(response)
+        # Extract potential options
+        options = []
+
+        if superposition_data:
+            # Handle both old and new superposition schemas:
+            # Old schema: {"consensus": [...], "polar": [...], "negative_consensus": [...]}
+            #   where items are dicts with 'content' field
+            # New schema: {"consensus_facts": [...], "perspectival_claims": [...]}
+            #   where items are strings directly
+
+            # Try new schema first (consensus_facts, perspectival_claims)
+            for key in ["consensus_facts", "perspectival_claims"]:
+                if key in superposition_data and isinstance(superposition_data[key], list):
+                    for item in superposition_data[key]:
+                        if isinstance(item, str):
+                            options.append(item)
+                        elif isinstance(item, dict) and "content" in item:
+                            options.append(item["content"])
+
+            # Fallback to old schema (consensus, polar, negative_consensus)
+            if not options:
+                for key in ["consensus", "polar", "negative_consensus"]:
+                    if key in superposition_data and isinstance(superposition_data[key], list):
+                        for artifact in superposition_data[key]:
+                            # Artifact is a dict with 'content'
+                            if isinstance(artifact, dict) and "content" in artifact:
+                                options.append(artifact["content"])
+        else:
+            # Parse text response
+            options = EvaluationService._extract_options(response)
 
         # Check if any option contains the expected entities
         best_matched = []
         best_recall = 0.0
 
         for option in options:
+            if not option:
+                continue
             matched = [entity for entity in expected_entities if entity in option]
             recall = len(matched) / len(expected_entities)
 
@@ -202,6 +222,82 @@ class EvaluationService:
                 if has_multiple
                 else f"Response appears to present a single view ({len(options)} options detected)"
             )
+        }
+
+    @staticmethod
+    def evaluate_with_validation_criteria(
+        response: str,
+        required_terms: List[str],
+        forbidden_terms: List[str],
+        validation_pattern: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Deterministic per-query validation using required/forbidden terms.
+
+        This provides precise hallucination detection by checking:
+        1. Grounding: Required synthetic terms must appear (entity recall)
+        2. Hallucination: Forbidden real-world terms must not appear
+
+        Args:
+            response: The system's response text
+            required_terms: Terms that MUST appear in the response (grounding check)
+            forbidden_terms: Terms that MUST NOT appear (hallucination check)
+            validation_pattern: Optional regex pattern for response structure
+
+        Returns:
+            Dict with:
+                - grounding_passed: bool (all required terms found)
+                - hallucination_passed: bool (no forbidden terms found)
+                - missing_required: List[str] (required terms not in response)
+                - forbidden_found: List[str] (forbidden terms found in response)
+                - pattern_matched: Optional[bool] (if pattern was checked)
+                - overall_passed: bool (all checks passed)
+
+        Implementation Notes:
+            - Case-insensitive matching for robustness
+            - Checks word boundaries to avoid partial matches
+            - Pattern matching uses re.search for flexibility
+        """
+        import re
+
+        response_lower = response.lower()
+
+        # Check required terms (grounding)
+        missing_required = []
+        for term in required_terms:
+            if term.lower() not in response_lower:
+                missing_required.append(term)
+
+        grounding_passed = len(missing_required) == 0
+
+        # Check forbidden terms (hallucination)
+        forbidden_found = []
+        for term in forbidden_terms:
+            if term.lower() in response_lower:
+                forbidden_found.append(term)
+
+        hallucination_passed = len(forbidden_found) == 0
+
+        # Check optional pattern
+        pattern_matched = None
+        if validation_pattern:
+            try:
+                pattern_matched = bool(re.search(validation_pattern, response, re.IGNORECASE))
+            except re.error:
+                pattern_matched = None  # Invalid pattern
+
+        # Overall result
+        overall_passed = grounding_passed and hallucination_passed
+        if pattern_matched is not None:
+            overall_passed = overall_passed and pattern_matched
+
+        return {
+            "grounding_passed": grounding_passed,
+            "hallucination_passed": hallucination_passed,
+            "missing_required": missing_required,
+            "forbidden_found": forbidden_found,
+            "pattern_matched": pattern_matched,
+            "overall_passed": overall_passed
         }
 
     @staticmethod

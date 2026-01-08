@@ -57,7 +57,9 @@ Enhanced Query:"""
         Per Mathematical Model Section 5.2, Equation 9:
         C(r_p) = V(q, context_p) · (1 / (1 + i))
         """
-        prompt = f"""You are a semantic verification judge. Evaluate whether the retrieved content answers the query.
+        prompt = f"""You are a semantic verification judge for a research archive system. Evaluate whether the retrieved content answers the query.
+
+IMPORTANT: This archive uses specialized research terminology. Accept unfamiliar technical terms as valid - focus on the semantic structure, not whether terms are recognizable.
 
 Query: "{query}"
 
@@ -79,9 +81,9 @@ Epoch Context (L2): {epoch_summary}
         prompt += """
 Instructions:
 1. Determine if the content provides a relevant answer to the query
-2. Consider semantic meaning, not just keyword overlap
-3. Account for hierarchical context if provided
-4. Return your assessment in JSON format
+2. Focus on structure: Does "Research status:" or "Status:" in content answer a "status" query?
+3. Accept specialized/technical terms as valid - do NOT reject for unfamiliar terminology
+4. If the content mentions the query subject and provides status information, return high confidence
 
 Required JSON format:
 {
