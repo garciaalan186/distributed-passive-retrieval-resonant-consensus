@@ -617,13 +617,14 @@ class SyntheticHistoryGeneratorV2:
         return base + perspective_frames.get(perspective, "")
     
     def _generate_consensus_claim(
-        self, 
-        domain: AlternateResearchDomain, 
+        self,
+        domain: AlternateResearchDomain,
         year: int
     ) -> Claim:
         """Generate a claim all perspectives agree on"""
         milestone = domain.milestones.get(year, "progress")
-        content = f"{domain.name}: {milestone}"
+        # Add explicit status language for verification
+        content = f"Research status for {year}: {domain.name} - {milestone}"
         claim_id = self._generate_claim_id(f"{content}_{year}")
         
         # All perspectives agree with high confidence
@@ -648,8 +649,9 @@ class SyntheticHistoryGeneratorV2:
         """Generate a claim where perspectives disagree"""
         concepts = list(domain.key_concepts.keys())
         metrics = list(domain.metrics.keys())
-        
-        base_claim = f"{domain.name} will achieve {self.rng.choice(concepts)} milestone by {year + self.rng.randint(1, 5)}"
+        # Add explicit status language for verification
+        target_year = year + self.rng.randint(1, 5)
+        base_claim = f"Status projection: {domain.name} will achieve {self.rng.choice(concepts)} milestone by {target_year}"
         claim_id = self._generate_claim_id(f"{base_claim}_{year}")
         
         # Each perspective has different view
@@ -682,12 +684,12 @@ class SyntheticHistoryGeneratorV2:
     def _generate_noise_claim(self, domain: AlternateResearchDomain, year: int) -> Claim:
         """Generate low-quality claim that should be rejected"""
         concepts = list(domain.key_concepts.keys())
-        
+        # Add explicit status language for verification
         noise_templates = [
-            f"Unverified rumor about {domain.name} {self.rng.choice(concepts)} breakthrough",
-            f"Retracted {domain.name} finding",
-            f"Preliminary {self.rng.choice(concepts)} result, not peer-reviewed",
-            f"Conflicting {domain.name} data, source unclear"
+            f"Status uncertain: Unverified rumor about {domain.name} {self.rng.choice(concepts)} breakthrough",
+            f"Status: Retracted {domain.name} finding",
+            f"Status pending review: Preliminary {self.rng.choice(concepts)} result, not peer-reviewed",
+            f"Status unclear: Conflicting {domain.name} data, source uncertain"
         ]
         
         content = self.rng.choice(noise_templates)
