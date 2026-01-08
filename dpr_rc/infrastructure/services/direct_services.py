@@ -283,13 +283,13 @@ class DirectWorkerService(IWorkerService):
         This method runs in a worker thread and processes a single shard
         using a GPU-pinned SLM instance from thread-local storage.
         """
-        # Get thread-local SLM instance (creates on first call in this thread)
+        # Set thread-local GPU assignment for SLMFactory
         from dpr_rc.infrastructure.slm import SLMFactory
-        # Note: SLMFactory.create_for_thread will create thread-local engine
-        # We don't directly use it here since the use_case will use its own engine
-        # But we ensure the factory knows about multi-GPU mode
+        SLMFactory._thread_local.gpu_id = gpu_id
 
         # Get or create use case for this shard
+        # The use case will create DirectSLMClient which will use
+        # SLMFactory.create_from_env(), which will now use the thread-local GPU
         use_case = self._get_use_case_for_shard(shard_id)
 
         # Create RFI request

@@ -76,9 +76,20 @@ class SLMFactory:
         """
         Create inference engine from environment variables.
 
+        In multi-GPU mode, uses thread-local storage with GPU pinning.
+        Otherwise uses singleton pattern.
+
         Returns:
             Configured InferenceEngine
         """
+        # Check if multi-GPU mode is enabled and we have a GPU assignment
+        multi_gpu = os.getenv("ENABLE_MULTI_GPU_WORKERS", "false").lower() == "true"
+
+        if multi_gpu and hasattr(SLMFactory._thread_local, 'gpu_id'):
+            # Use thread-local GPU-pinned instance
+            return SLMFactory.create_for_thread(SLMFactory._thread_local.gpu_id)
+
+        # Fallback to singleton pattern for non-multi-GPU mode
         model_id = os.getenv("SLM_MODEL", "Qwen/Qwen2-0.5B-Instruct")
         max_tokens = int(os.getenv("SLM_MAX_TOKENS", "150"))
         device = "cuda" if torch.cuda.is_available() else "cpu"

@@ -34,8 +34,8 @@ os.environ["ENABLE_PARALLEL_QUERIES"] = "false"
 os.environ["MAX_CONCURRENT_QUERIES"] = "6"  # Will be used once Tier 3B is validated
 
 # Tier 3B Optimization: Multi-GPU parallel shard processing with ThreadPoolExecutor
-# DISABLED initially - enable after verifying baseline accuracy is maintained
-os.environ["ENABLE_MULTI_GPU_WORKERS"] = "false"  # Set to "true" to enable Tier 3B
+# ENABLED: Baseline accuracy verified, testing 2x speedup with dual GPU
+os.environ["ENABLE_MULTI_GPU_WORKERS"] = "true"  # Tier 3B enabled for multi-GPU parallelization
 os.environ["NUM_WORKER_THREADS"] = "6"  # 3 threads per GPU (RTX 3060 12GB each)
 
 from benchmark.research_benchmark import ResearchBenchmarkSuite
