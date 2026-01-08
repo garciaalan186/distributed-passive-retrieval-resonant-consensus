@@ -6,7 +6,7 @@ Concrete implementation of IModelBackend using HuggingFace transformers.
 
 import torch
 from typing import Optional
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 
 
 class TransformersBackend:
@@ -22,6 +22,7 @@ class TransformersBackend:
         device: str = "cpu",
         torch_dtype: Optional[torch.dtype] = None,
         device_map: Optional[str] = None,
+        use_4bit_quantization: bool = False,
     ):
         """
         Initialize backend.
@@ -31,6 +32,7 @@ class TransformersBackend:
             device: Device to run on ("cpu" or "cuda")
             torch_dtype: Optional dtype for model
             device_map: Optional device map for multi-GPU (e.g., "auto")
+            use_4bit_quantization: Enable 4-bit quantization for memory efficiency
         """
         self.model_id = model_id
         self.device = device
@@ -40,7 +42,20 @@ class TransformersBackend:
 
         # Load model with optional device_map for multi-GPU
         load_kwargs = {"torch_dtype": torch_dtype} if torch_dtype else {}
-        if device_map:
+
+        # Configure 4-bit quantization if enabled
+        if use_4bit_quantization:
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4"
+            )
+            load_kwargs["quantization_config"] = bnb_config
+            # 4-bit models must use device_map for automatic placement
+            load_kwargs["device_map"] = device_map or "auto"
+            self.model = AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs)
+        elif device_map:
             load_kwargs["device_map"] = device_map
             self.model = AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs)
         else:

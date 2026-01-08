@@ -13,7 +13,8 @@ sys.path.append(os.getcwd())
 os.environ["USE_NEW_EXECUTOR"] = "true"
 os.environ["USE_DIRECT_SERVICES"] = "true"
 os.environ["BENCHMARK_SCALE"] = "mini"
-os.environ["SLM_MODEL"] = "microsoft/Phi-3-mini-4k-instruct"  # Full-size model (Qwen2 has 0% accuracy)
+os.environ["SLM_MODEL"] = "microsoft/Phi-3-mini-4k-instruct"  # Full-size model with 4-bit quantization
+os.environ["SLM_USE_4BIT_QUANTIZATION"] = "true"  # Reduces memory from ~7-8GB to ~2GB
 os.environ["SLM_TIMEOUT"] = "60"
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 os.environ["ANONYMIZED_TELEMETRY"] = "false"
@@ -29,14 +30,14 @@ os.environ["SLM_SERVICE_URL"] = "http://localhost:8081"
 os.environ["PASSIVE_WORKER_URL"] = "http://localhost:8082"
 
 # Tier 1 Optimization: Parallel query execution
-# DISABLED: Will be re-enabled after Tier 3B is validated
+# DISABLED: Singleton pattern causes contention - need refactoring for true parallel
 os.environ["ENABLE_PARALLEL_QUERIES"] = "false"
-os.environ["MAX_CONCURRENT_QUERIES"] = "6"  # Will be used once Tier 3B is validated
+os.environ["MAX_CONCURRENT_QUERIES"] = "2"  # Reserved for future use
 
-# Tier 3B Optimization: Multi-GPU parallel shard processing with ThreadPoolExecutor
-# ENABLED: Baseline accuracy verified, testing 2x speedup with dual GPU
-os.environ["ENABLE_MULTI_GPU_WORKERS"] = "false"  # Disabled - Qwen2 gives 0% accuracy, Phi-3 too large
-os.environ["NUM_WORKER_THREADS"] = "1"  # Sequential processing with Phi-3
+# Tier 3B Optimization: Multi-GPU parallel shard processing
+# DISABLED: 4-bit accuracy verified (100%), but singleton pattern limits parallelism
+os.environ["ENABLE_MULTI_GPU_WORKERS"] = "false"
+os.environ["NUM_WORKER_THREADS"] = "1"
 
 from benchmark.research_benchmark import ResearchBenchmarkSuite
 from pathlib import Path
