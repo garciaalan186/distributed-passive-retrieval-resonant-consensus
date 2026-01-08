@@ -561,43 +561,45 @@ class SyntheticHistoryGeneratorV2:
         particles = list(self.physics.particles.keys())
         phenomena = list(self.physics.phenomena.keys())
         
-        # Templates using alternate terminology
+        # Templates using alternate terminology with explicit status language
+        # Each template explicitly mentions "status" to answer queries like
+        # "What was the status of {domain} research in {year}?"
         templates = {
             "experiment": [
-                f"Conducted {domain.name} experiment measuring {self.rng.choice(metrics)} during {milestone}",
-                f"Replicated {self.rng.choice(concepts)} detection with {self.rng.randint(85, 99)}% {self.rng.choice(metrics)} accuracy",
-                f"New {self.rng.choice(phenomena)} observation protocol for {domain.name}",
-                f"Tested {self.rng.choice(particles)} interactions in {self.rng.choice(concepts)} regime"
+                f"Status: {domain.name} research active. Conducted experiment measuring {self.rng.choice(metrics)} during {milestone}",
+                f"Current research status: {domain.name} - Replicated {self.rng.choice(concepts)} detection with {self.rng.randint(85, 99)}% {self.rng.choice(metrics)} accuracy",
+                f"Research status update: New {self.rng.choice(phenomena)} observation protocol for {domain.name}",
+                f"{domain.name} status: Ongoing experiments. Tested {self.rng.choice(particles)} interactions in {self.rng.choice(concepts)} regime"
             ],
             "publication": [
-                f"Published findings on {domain.name}: {milestone}",
-                f"Preprint released: {self.rng.choice(concepts)} advances in {self.rng.choice(phenomena)}",
-                f"Review article: {domain.name} progress through {year}, focusing on {self.rng.choice(metrics)}"
+                f"Status: {domain.name} research published. Published findings on {domain.name}: {milestone}",
+                f"Research status: Active publication phase. Preprint released: {self.rng.choice(concepts)} advances in {self.rng.choice(phenomena)}",
+                f"Status update: Review article on {domain.name} progress through {year}, focusing on {self.rng.choice(metrics)}"
             ],
             "meeting": [
-                f"Conference presentation on {domain.name} {self.rng.choice(concepts)}",
-                f"Team discussion: {self.rng.choice(phenomena)} implications for {domain.name}",
-                f"Workshop on {self.rng.choice(particles)} applications in {domain.name}"
+                f"Status: {domain.name} under active discussion. Conference presentation on {domain.name} {self.rng.choice(concepts)}",
+                f"Current status: Team discussion ongoing about {self.rng.choice(phenomena)} implications for {domain.name}",
+                f"Research status: Collaborative. Workshop on {self.rng.choice(particles)} applications in {domain.name}"
             ],
             "discovery": [
-                f"Unexpected {self.rng.choice(phenomena)} behavior in {domain.name}: {self.rng.choice(metrics)} anomaly",
-                f"Novel {self.rng.choice(concepts)} configuration discovered",
-                f"Breakthrough: {self.rng.choice(particles)} exhibits {self.rng.choice(phenomena)} under new conditions"
+                f"Status: {domain.name} breakthrough achieved. Unexpected {self.rng.choice(phenomena)} behavior observed: {self.rng.choice(metrics)} anomaly",
+                f"Research status: Major discovery. Novel {self.rng.choice(concepts)} configuration discovered in {domain.name}",
+                f"Status update: Breakthrough in {domain.name}. {self.rng.choice(particles)} exhibits {self.rng.choice(phenomena)} under new conditions"
             ],
             "revision": [
-                f"Updated {domain.name} model: {self.rng.choice(concepts)} assumptions corrected",
-                f"Revised {self.rng.choice(metrics)} calibration based on {self.rng.choice(phenomena)} data",
-                f"Reconciled conflicting {self.rng.choice(particles)} measurements"
+                f"Status: {domain.name} model revised. Updated model: {self.rng.choice(concepts)} assumptions corrected",
+                f"Current status: Under revision. Revised {self.rng.choice(metrics)} calibration based on {self.rng.choice(phenomena)} data",
+                f"Research status: Reconciling data. Reconciled conflicting {self.rng.choice(particles)} measurements in {domain.name}"
             ],
             "collaboration": [
-                f"Partnership formed for {domain.name} {self.rng.choice(concepts)} research",
-                f"Multi-site {self.rng.choice(phenomena)} study initiated",
-                f"Industry collaboration on {self.rng.choice(metrics)} optimization"
+                f"Status: {domain.name} collaborative phase. Partnership formed for {self.rng.choice(concepts)} research",
+                f"Research status: Multi-institutional. Multi-site {self.rng.choice(phenomena)} study initiated for {domain.name}",
+                f"Current status: Industry partnership. Collaboration on {self.rng.choice(metrics)} optimization in {domain.name}"
             ],
             "funding": [
-                f"Grant awarded for {domain.name} {self.rng.choice(concepts)} development",
-                f"Investment in {self.rng.choice(phenomena)} infrastructure",
-                f"Public funding for {self.rng.choice(particles)} research program"
+                f"Status: {domain.name} funded for development. Grant awarded for {self.rng.choice(concepts)} development",
+                f"Research status: Well-funded. Investment in {self.rng.choice(phenomena)} infrastructure for {domain.name}",
+                f"Status update: Public funding secured for {self.rng.choice(particles)} research program in {domain.name}"
             ]
         }
         
