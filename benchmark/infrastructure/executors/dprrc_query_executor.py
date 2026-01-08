@@ -22,7 +22,8 @@ import asyncio
 import aiohttp
 import os
 import threading
-from concurrent.futures import ThreadPoolExecutor
+import multiprocessing as mp
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 from typing import Optional, List, Union
 
 from benchmark.domain.interfaces import IQueryExecutor, QueryExecutionResult
@@ -49,6 +50,7 @@ class DPRRCQueryExecutor(IQueryExecutor):
 
     # Persistent thread pool for multi-GPU execution (shared across batches)
     _gpu_thread_pool: Optional[ThreadPoolExecutor] = None
+    _gpu_process_pool: Optional[mp.Pool] = None
     _pool_lock = threading.Lock()
 
     def __init__(
@@ -316,17 +318,61 @@ class DPRRCQueryExecutor(IQueryExecutor):
             return await asyncio.gather(*tasks)
 
     @classmethod
-    def _get_gpu_thread_pool(cls) -> ThreadPoolExecutor:
-        """Get or create persistent GPU thread pool."""
-        if cls._gpu_thread_pool is None:
+    def _get_gpu_process_pool(cls, num_gpus: int) -> mp.Pool:
+        """
+        Get or create persistent GPU process pool.
+
+        Each worker process is initialized with a specific GPU assignment
+        via CUDA_VISIBLE_DEVICES environment variable.
+        """
+        if cls._gpu_process_pool is None:
             with cls._pool_lock:
-                if cls._gpu_thread_pool is None:
-                    num_gpus = int(os.getenv("NUM_WORKER_THREADS", "2"))
-                    cls._gpu_thread_pool = ThreadPoolExecutor(
-                        max_workers=num_gpus,
-                        thread_name_prefix="GPU-Query"
+                if cls._gpu_process_pool is None:
+                    print(f"Creating process pool with {num_gpus} GPU workers...")
+
+                    # Use spawn to get clean processes (required for CUDA)
+                    ctx = mp.get_context("spawn")
+
+                    # Create pool with initializer for each GPU
+                    cls._gpu_process_pool = ctx.Pool(
+                        processes=num_gpus,
+                        initializer=cls._init_gpu_worker,
+                        initargs=(num_gpus,)
                     )
-        return cls._gpu_thread_pool
+                    print("Process pool created and workers initialized")
+
+        return cls._gpu_process_pool
+
+    @staticmethod
+    def _init_gpu_worker(num_gpus: int):
+        """
+        Initialize a worker process with GPU assignment.
+
+        Called once when each worker process starts. Uses the worker's
+        process index to determine GPU assignment.
+        """
+        import os
+
+        # Get worker identity from process name or use round-robin
+        worker_name = mp.current_process().name
+        if "SpawnPoolWorker-" in worker_name:
+            worker_idx = int(worker_name.split("-")[-1]) - 1
+        else:
+            worker_idx = 0
+
+        gpu_id = worker_idx % num_gpus
+
+        # Set CUDA visibility for this process
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+        os.environ["ENABLE_MULTI_GPU_WORKERS"] = "false"  # Single GPU per process
+
+        print(f"Worker {worker_name} assigned to GPU {gpu_id}")
+
+        # Pre-load the model
+        from dpr_rc.infrastructure.slm import SLMFactory
+        print(f"Worker {worker_name}: Loading model on GPU {gpu_id}...")
+        SLMFactory.get_engine()
+        print(f"Worker {worker_name}: Model ready")
 
     async def _execute_batch_multi_gpu(
         self,
@@ -334,55 +380,53 @@ class DPRRCQueryExecutor(IQueryExecutor):
         timestamp_context: Optional[str] = None
     ) -> List[QueryExecutionResult]:
         """
-        Execute queries in parallel using persistent ThreadPoolExecutor with GPU pinning.
+        Execute queries in parallel using ProcessPoolExecutor.
 
-        Each query is assigned to a GPU in round-robin fashion, and the
-        SLMFactory GPU context is set per-thread for proper GPU routing.
-
-        The thread pool is persistent to keep models loaded across batches.
+        Each query is processed by a worker with its own GPU and model instance.
+        This avoids asyncio overhead and enables true parallel GPU execution.
         """
         num_gpus = int(os.getenv("NUM_WORKER_THREADS", "2"))
+        pool = self._get_gpu_process_pool(num_gpus)
+
+        # Prepare args for each query
+        work_items = [
+            (query_text, query_id, timestamp_context)
+            for query_id, query_text in queries
+        ]
+
+        # Execute in parallel using process pool
         loop = asyncio.get_event_loop()
-        executor = self._get_gpu_thread_pool()
+        results = await loop.run_in_executor(
+            None,
+            lambda: pool.map(_process_query_sync, work_items)
+        )
 
-        futures = []
-        for idx, (query_id, query_text) in enumerate(queries):
-            gpu_id = idx % num_gpus
-            future = loop.run_in_executor(
-                executor,
-                self._execute_query_on_gpu,
-                query_text,
-                query_id,
-                timestamp_context,
-                gpu_id
+        # Convert worker results to QueryExecutionResult
+        return [
+            QueryExecutionResult(
+                query_id=r.query_id,
+                query_text=r.query_text,
+                response=r.response,
+                confidence=r.confidence,
+                latency_ms=r.latency_ms,
+                success=r.success,
+                error=r.error,
+                metadata=r.metadata
             )
-            futures.append(future)
+            for r in results
+        ]
 
-        # Wait for all queries to complete
-        results = await asyncio.gather(*futures)
-
-        return results
-
-    def _execute_query_on_gpu(
-        self,
-        query: str,
-        query_id: str,
-        timestamp_context: Optional[str],
-        gpu_id: int
-    ) -> QueryExecutionResult:
-        """
-        Execute a single query on a specific GPU (runs in ThreadPoolExecutor).
-
-        Sets GPU context for this thread before execution so all SLM calls
-        use the assigned GPU. Context is not cleared since threads are reused.
-        """
-        from dpr_rc.infrastructure.slm import SLMFactory
-
-        # Set GPU context for this thread (persists for thread reuse)
-        SLMFactory.set_gpu_context(gpu_id)
-
-        # Run the async execute method synchronously in this thread
-        return asyncio.run(self.execute(query, query_id, timestamp_context))
+    @classmethod
+    def shutdown_pools(cls):
+        """Shutdown process and thread pools."""
+        with cls._pool_lock:
+            if cls._gpu_process_pool is not None:
+                cls._gpu_process_pool.close()
+                cls._gpu_process_pool.join()
+                cls._gpu_process_pool = None
+            if cls._gpu_thread_pool is not None:
+                cls._gpu_thread_pool.shutdown(wait=True)
+                cls._gpu_thread_pool = None
 
     @property
     def executor_id(self) -> str:
@@ -490,4 +534,101 @@ def create_dprrc_executor(
             controller_url=controller_url,
             timeout=timeout,
             enable_query_enhancement=enable_query_enhancement
+        )
+
+
+# Dataclass for serializable worker results (must be module-level for pickling)
+from dataclasses import dataclass
+from typing import Dict, Any
+
+
+@dataclass
+class _WorkerResult:
+    """Serializable result from GPU worker process."""
+    query_id: str
+    query_text: str
+    response: str
+    confidence: float
+    latency_ms: float
+    success: bool
+    error: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+def _process_query_sync(args: tuple) -> _WorkerResult:
+    """
+    Process a single query synchronously in a worker process.
+
+    This is a module-level function for multiprocessing pickling.
+    Each worker process has its own model loaded on its assigned GPU.
+
+    Args:
+        args: Tuple of (query_text, query_id, timestamp_context)
+
+    Returns:
+        _WorkerResult with query execution results
+    """
+    query_text, query_id, timestamp_context = args
+    start_time = time.time()
+
+    try:
+        # Import here to ensure fresh imports in spawned process
+        from dpr_rc.infrastructure.services.direct_services import DirectSLMService, DirectWorkerService
+        from dpr_rc.infrastructure.services import SimpleRouterService
+        from dpr_rc.application.use_cases import ProcessQueryUseCase
+        from dpr_rc.application.dtos import ProcessQueryRequest
+        import asyncio
+
+        # Create services (model already loaded in worker init)
+        slm_service = DirectSLMService()
+        router_service = SimpleRouterService()
+        worker_service = DirectWorkerService()
+
+        # Create use case
+        use_case = ProcessQueryUseCase(
+            slm_service=slm_service,
+            router_service=router_service,
+            worker_service=worker_service
+        )
+
+        # Create request
+        request = ProcessQueryRequest(
+            query_text=query_text,
+            trace_id=query_id,
+            timestamp_context=timestamp_context if timestamp_context else None,
+            enable_query_enhancement=True
+        )
+
+        # Execute (run async in this process's event loop)
+        response = asyncio.run(use_case.execute(request))
+
+        latency_ms = (time.time() - start_time) * 1000
+
+        return _WorkerResult(
+            query_id=query_id,
+            query_text=query_text,
+            response=response.final_answer,
+            confidence=response.confidence,
+            latency_ms=latency_ms,
+            success=(response.status in ["SUCCESS", "NO_DATA"]),
+            metadata={
+                "execution_mode": "process",
+                "status": response.status,
+                "sources": response.sources,
+                "superposition": response.superposition
+            }
+        )
+
+    except Exception as e:
+        import traceback
+        latency_ms = (time.time() - start_time) * 1000
+        return _WorkerResult(
+            query_id=query_id,
+            query_text=query_text,
+            response="",
+            confidence=0.0,
+            latency_ms=latency_ms,
+            success=False,
+            error=f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}",
+            metadata={"execution_mode": "process"}
         )

@@ -30,16 +30,14 @@ os.environ["SLM_SERVICE_URL"] = "http://localhost:8081"
 os.environ["PASSIVE_WORKER_URL"] = "http://localhost:8082"
 
 # Tier 1 Optimization: Parallel query execution
-# DISABLED: asyncio.run() overhead in threads causes 2x slowdown vs sequential
-# Future work: Use synchronous execution or process-based parallelism
-os.environ["ENABLE_PARALLEL_QUERIES"] = "false"
-os.environ["MAX_CONCURRENT_QUERIES"] = "2"
+# ENABLED: Process-based parallelism avoids asyncio overhead
+os.environ["ENABLE_PARALLEL_QUERIES"] = "true"
+os.environ["MAX_CONCURRENT_QUERIES"] = "2"  # 2 parallel processes
 
-# Tier 3B Optimization: Multi-GPU parallel shard processing
-# DISABLED: Infrastructure ready but parallel queries cause slowdown
-# GPU pool pattern implemented in SLMFactory for future optimization
-os.environ["ENABLE_MULTI_GPU_WORKERS"] = "false"
-os.environ["NUM_WORKER_THREADS"] = "1"
+# Tier 3B Optimization: Multi-GPU parallel processing
+# ENABLED: Each process gets its own GPU via CUDA_VISIBLE_DEVICES
+os.environ["ENABLE_MULTI_GPU_WORKERS"] = "true"
+os.environ["NUM_WORKER_THREADS"] = "2"  # 2 GPU workers
 
 from benchmark.research_benchmark import ResearchBenchmarkSuite
 from pathlib import Path
