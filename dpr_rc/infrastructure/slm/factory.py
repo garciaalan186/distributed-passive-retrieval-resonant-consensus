@@ -5,6 +5,7 @@ Dependency injection factory for assembling SLM components.
 """
 
 import os
+import threading
 import torch
 from dpr_rc.domain.slm.services import PromptBuilder, ResponseParser, InferenceEngine
 from dpr_rc.infrastructure.slm.backends import TransformersBackend
@@ -18,6 +19,7 @@ class SLMFactory:
     """
 
     _inference_engine_instance = None
+    _thread_local = threading.local()
 
     @staticmethod
     def create_inference_engine(
@@ -86,3 +88,46 @@ class SLMFactory:
             device=device,
             max_tokens=max_tokens,
         )
+
+    @staticmethod
+    def create_for_thread(gpu_id: int) -> InferenceEngine:
+        """
+        Create SLM instance for current thread, pinned to specific GPU.
+        Uses thread-local storage to ensure one instance per thread.
+
+        Args:
+            gpu_id: GPU device ID (0 or 1)
+
+        Returns:
+            Thread-local InferenceEngine instance
+        """
+        if not hasattr(SLMFactory._thread_local, 'engine'):
+            # First call in this thread - create new instance
+            device = f"cuda:{gpu_id}"
+            model_id = os.getenv("SLM_MODEL", "microsoft/Phi-3-mini-4k-instruct")
+            max_tokens = int(os.getenv("SLM_MAX_TOKENS", "150"))
+            attn_impl = os.getenv("SLM_ATTN_IMPL", "sdpa")
+
+            # Create backend with specific device (no device_map for thread-local)
+            prompt_builder = PromptBuilder()
+            response_parser = ResponseParser()
+
+            model_backend = TransformersBackend(
+                model_id=model_id,
+                device=device,
+                torch_dtype=torch.float16,
+                device_map=None,  # Single GPU per thread
+            )
+
+            # Wire together
+            engine = InferenceEngine(
+                model_backend=model_backend,
+                prompt_builder=prompt_builder,
+                response_parser=response_parser,
+                max_tokens=max_tokens,
+            )
+
+            SLMFactory._thread_local.engine = engine
+            SLMFactory._thread_local.gpu_id = gpu_id
+
+        return SLMFactory._thread_local.engine

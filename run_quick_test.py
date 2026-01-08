@@ -29,17 +29,14 @@ os.environ["SLM_SERVICE_URL"] = "http://localhost:8081"
 os.environ["PASSIVE_WORKER_URL"] = "http://localhost:8082"
 
 # Tier 1 Optimization: Parallel query execution
-# DISABLED: With single SLM instance, parallel queries cause GPU contention and slow down execution
-# Will be re-enabled after Tier 3 (multi-GPU) is implemented
+# DISABLED: Will be re-enabled after Tier 3B is validated
 os.environ["ENABLE_PARALLEL_QUERIES"] = "false"
-os.environ["MAX_CONCURRENT_QUERIES"] = "6"  # Will be used once multi-GPU is ready
+os.environ["MAX_CONCURRENT_QUERIES"] = "6"  # Will be used once Tier 3B is validated
 
-# Tier 2 Optimization: Parallel shard processing (coming next)
-os.environ["ENABLE_SHARD_PARALLELIZATION"] = "true"
-
-# Reset SLM factory singleton
-from dpr_rc.infrastructure.slm.factory import SLMFactory
-SLMFactory.reset()
+# Tier 3B Optimization: Multi-GPU parallel shard processing with ThreadPoolExecutor
+# DISABLED initially - enable after verifying baseline accuracy is maintained
+os.environ["ENABLE_MULTI_GPU_WORKERS"] = "false"  # Set to "true" to enable Tier 3B
+os.environ["NUM_WORKER_THREADS"] = "6"  # 3 threads per GPU (RTX 3060 12GB each)
 
 from benchmark.research_benchmark import ResearchBenchmarkSuite
 from pathlib import Path

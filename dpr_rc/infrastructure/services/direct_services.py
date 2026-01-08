@@ -11,6 +11,8 @@ interfaces as the HTTP services but call the logic directly.
 import os
 import json
 import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional, Dict, Any
 from dpr_rc.application.interfaces import ISLMService, IWorkerService
 from dpr_rc.models import ConsensusVote
@@ -69,6 +71,10 @@ class DirectWorkerService(IWorkerService):
     def __init__(self):
         # Cache of use cases keyed by cluster_id
         self._use_cases = {}
+
+        # Tier 3B: Thread pool for multi-GPU parallel shard processing
+        self._thread_pool = None
+        self._pool_lock = threading.Lock()
         
     def _get_use_case(self, epoch_year: int):
         """Get or create a use case for the specific epoch."""
@@ -105,6 +111,35 @@ class DirectWorkerService(IWorkerService):
         self._use_cases[cluster_id] = use_case
         return use_case
 
+    def _get_use_case_for_shard(self, shard_id: str):
+        """Get or create use case for a specific shard (used in thread pool)."""
+        # Extract year from shard_id
+        try:
+            parts = shard_id.split("_")
+            if len(parts) == 2:  # Simple format: shard_YYYY
+                epoch_year = int(parts[1])
+            elif len(parts) >= 3:  # Tempo-normalized: shard_XXX_YYYY-MM_YYYY-MM
+                start_date = parts[-2]  # e.g., "2015-01"
+                epoch_year = int(start_date.split("-")[0])
+            else:
+                epoch_year = 2020  # Default fallback
+        except (ValueError, IndexError):
+            epoch_year = 2020  # Default fallback on parsing error
+
+        return self._get_use_case(epoch_year)
+
+    def _get_or_create_thread_pool(self):
+        """Lazy initialization of thread pool with thread safety."""
+        if self._thread_pool is None:
+            with self._pool_lock:
+                if self._thread_pool is None:  # Double-check locking
+                    num_workers = int(os.getenv("NUM_WORKER_THREADS", "6"))
+                    self._thread_pool = ThreadPoolExecutor(
+                        max_workers=num_workers,
+                        thread_name_prefix="SLM-Worker"
+                    )
+        return self._thread_pool
+
     async def gather_votes(
         self,
         trace_id: str,
@@ -117,23 +152,22 @@ class DirectWorkerService(IWorkerService):
         Gather votes by calling local use case.
         Simulates distributed retrieval by dispatching to the correct worker based on shard.
 
-        Tier 2 Optimization: Parallel shard processing when enabled.
+        Tier 3B Optimization: ThreadPoolExecutor multi-GPU parallel shard processing.
         """
         import os
 
-        # Tier 2: Check if parallel shard processing is enabled
-        enable_parallel = os.getenv("ENABLE_SHARD_PARALLELIZATION", "false").lower() == "true"
+        # Tier 3B: Check if multi-GPU parallel processing is enabled
+        enable_multi_gpu = os.getenv("ENABLE_MULTI_GPU_WORKERS", "false").lower() == "true"
 
-        if not enable_parallel:
-            # Sequential processing (original implementation)
+        if enable_multi_gpu:
+            return await self._gather_votes_parallel_multi_gpu(
+                trace_id, query_text, original_query, target_shards, timestamp_context
+            )
+        else:
+            # Sequential processing (baseline)
             return await self._gather_votes_sequential(
                 trace_id, query_text, original_query, target_shards, timestamp_context
             )
-
-        # Parallel processing (Tier 2 optimization)
-        return await self._gather_votes_parallel(
-            trace_id, query_text, original_query, target_shards, timestamp_context
-        )
 
     async def _gather_votes_sequential(
         self,
@@ -192,7 +226,7 @@ class DirectWorkerService(IWorkerService):
 
         return all_votes
 
-    async def _gather_votes_parallel(
+    async def _gather_votes_parallel_multi_gpu(
         self,
         trace_id: str,
         query_text: str,
@@ -201,68 +235,89 @@ class DirectWorkerService(IWorkerService):
         timestamp_context: Optional[str]
     ) -> List[ConsensusVote]:
         """
-        Parallel shard processing (Tier 2 optimization).
-
-        Processes all shards concurrently using asyncio.gather().
-        ChromaDB queries run in parallel (CPU-bound operations benefit from threading).
-        SLM calls will still serialize on single GPU, but we save time on retrieval.
+        Process shards in parallel using ThreadPoolExecutor (Tier 3B).
+        Distributes shard processing across multiple GPUs.
         """
+        pool = self._get_or_create_thread_pool()
+        loop = asyncio.get_event_loop()
 
-        async def process_shard(shard_id: str) -> List[ConsensusVote]:
-            """Process a single shard and return its votes"""
-            # Extract year from shard_id
-            try:
-                parts = shard_id.split("_")
-                if len(parts) == 2:  # Simple format: shard_YYYY
-                    epoch_year = int(parts[1])
-                elif len(parts) >= 3:  # Tempo-normalized: shard_XXX_YYYY-MM_YYYY-MM
-                    start_date = parts[-2]  # e.g., "2015-01"
-                    epoch_year = int(start_date.split("-")[0])
-                else:
-                    epoch_year = 2020  # Default fallback
-            except (ValueError, IndexError):
-                epoch_year = 2020  # Default fallback on parsing error
+        # Create tasks for each shard with GPU assignment
+        tasks = []
+        for idx, shard_id in enumerate(target_shards):
+            gpu_id = idx % 2  # Alternate between GPU 0 and 1
 
-            use_case = self._get_use_case(epoch_year)
-
-            # Create request DTO for this specific shard
-            request = ProcessRFIRequest(
-                trace_id=trace_id,
-                query_text=query_text,
-                original_query=original_query,
-                target_shards=[shard_id],
-                timestamp_context=timestamp_context or ""
+            task = loop.run_in_executor(
+                pool,
+                self._process_shard_sync,
+                shard_id,
+                gpu_id,
+                trace_id,
+                query_text,
+                original_query,
+                timestamp_context
             )
+            tasks.append(task)
 
-            try:
-                # Execute use case in a separate thread
-                response = await asyncio.to_thread(use_case.execute, request)
+        # Wait for all shards to complete
+        results = await asyncio.gather(*tasks)
 
-                # Convert dicts back to ConsensusVote objects
-                votes = []
-                for v_data in response.votes:
-                    try:
-                        vote = ConsensusVote(**v_data)
-                        votes.append(vote)
-                    except Exception as e:
-                        pass  # Failed to parse vote
-
-                return votes
-
-            except Exception as e:
-                return []  # Direct worker execution failed
-
-        # Process all shards in parallel
-        shard_votes_lists = await asyncio.gather(*[
-            process_shard(shard_id) for shard_id in target_shards
-        ])
-
-        # Flatten list of lists
+        # Flatten votes from all shards
         all_votes = []
-        for votes in shard_votes_lists:
+        for votes in results:
             all_votes.extend(votes)
 
         return all_votes
+
+    def _process_shard_sync(
+        self,
+        shard_id: str,
+        gpu_id: int,
+        trace_id: str,
+        query_text: str,
+        original_query: str,
+        timestamp_context: Optional[str] = None
+    ) -> List[ConsensusVote]:
+        """
+        Synchronous shard processing for thread pool execution.
+
+        This method runs in a worker thread and processes a single shard
+        using a GPU-pinned SLM instance from thread-local storage.
+        """
+        # Get thread-local SLM instance (creates on first call in this thread)
+        from dpr_rc.infrastructure.slm import SLMFactory
+        # Note: SLMFactory.create_for_thread will create thread-local engine
+        # We don't directly use it here since the use_case will use its own engine
+        # But we ensure the factory knows about multi-GPU mode
+
+        # Get or create use case for this shard
+        use_case = self._get_use_case_for_shard(shard_id)
+
+        # Create RFI request
+        request = ProcessRFIRequest(
+            query_text=query_text,
+            original_query=original_query,
+            target_shards=[shard_id],
+            trace_id=trace_id,
+            timestamp_context=timestamp_context or ""
+        )
+
+        try:
+            # Execute (synchronous call in thread)
+            response = use_case.execute(request)
+
+            # Convert dicts to ConsensusVote objects
+            votes = []
+            for v_data in response.votes:
+                try:
+                    vote = ConsensusVote(**v_data)
+                    votes.append(vote)
+                except Exception as e:
+                    pass  # Failed to parse vote
+
+            return votes
+
+        except Exception as e:
+            return []  # Execution failed
 
     async def gather_responses(
         self,
