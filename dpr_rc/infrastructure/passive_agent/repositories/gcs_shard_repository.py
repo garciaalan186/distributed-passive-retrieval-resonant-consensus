@@ -294,23 +294,32 @@ class GCSShardRepository:
             with open(dataset_path, "r") as f:
                 dataset = json.load(f)
 
-            # Extract claims for this year
+            # Extract events for this year (primary source - matches benchmark ingestion)
             year = metadata.year
-            claims = dataset.get("claims", {})
-            year_claims = [
-                claim
-                for claim in claims.values()
-                if claim.get("timestamp", "").startswith(str(year))
+            events = dataset.get("events", [])
+            year_events = [
+                event
+                for event in events
+                if event.get("timestamp", "").startswith(str(year))
             ]
 
-            if not year_claims:
-                return False
+            # Fall back to claims if no events found
+            if not year_events:
+                claims = dataset.get("claims", {})
+                year_claims = [
+                    claim
+                    for claim in claims.values()
+                    if claim.get("timestamp", "").startswith(str(year))
+                ]
+                if not year_claims:
+                    return False
+                year_events = year_claims
 
             # Prepare documents
             fallback_docs = []
-            for i, claim in enumerate(year_claims):
-                doc_id = f"fallback_{year}_{i}"
-                content = claim.get("content", "")
+            for i, item in enumerate(year_events):
+                doc_id = item.get("id", f"fallback_{year}_{i}")
+                content = item.get("content", "")
                 fallback_docs.append(
                     {
                         "id": doc_id,
@@ -318,7 +327,7 @@ class GCSShardRepository:
                         "metadata": {
                             "year": year,
                             "type": "fallback_dataset",
-                            "claim_id": claim.get("id", ""),
+                            "item_id": item.get("id", ""),
                             "index": i,
                         },
                     }
