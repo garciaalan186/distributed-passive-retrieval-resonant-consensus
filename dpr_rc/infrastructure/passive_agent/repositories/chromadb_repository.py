@@ -4,9 +4,11 @@ Infrastructure: ChromaDB Embedding Repository
 Concrete implementation of IEmbeddingRepository using ChromaDB for vector storage.
 """
 
+import os
 import hashlib
 from typing import List, Dict, Any, Optional
 import chromadb
+from chromadb.config import Settings
 import numpy as np
 
 from dpr_rc.domain.passive_agent.repositories import IEmbeddingRepository, RetrievalResult
@@ -20,6 +22,9 @@ class ChromaDBRepository:
 
     Handles document storage, retrieval, and similarity search.
     Supports both automatic embedding computation and pre-computed embeddings.
+
+    Uses CHROMA_DB_PATH environment variable for persistent storage if set,
+    otherwise falls back to in-memory storage.
     """
 
     def __init__(
@@ -33,8 +38,21 @@ class ChromaDBRepository:
         Args:
             chroma_client: ChromaDB client instance (creates new if None)
             embedding_model: Model to use for query embeddings
+
+        If CHROMA_DB_PATH is set, uses persistent storage at that path.
+        This allows multiple components (DPR-RC and baseline) to share data.
         """
-        self.chroma = chroma_client or chromadb.Client()
+        if chroma_client:
+            self.chroma = chroma_client
+        else:
+            chroma_path = os.getenv("CHROMA_DB_PATH")
+            if chroma_path:
+                # Use persistent storage so DPR-RC and baseline share the same data
+                self.chroma = chromadb.PersistentClient(path=chroma_path)
+            else:
+                # Fall back to in-memory for tests
+                self.chroma = chromadb.Client()
+
         self.embedding_model = embedding_model
         self.logger = StructuredLogger(ComponentType.PASSIVE_WORKER)
 
@@ -267,7 +285,23 @@ class ChromaDBRepository:
         Returns:
             True if collection exists
         """
-        return shard_id in self._collections
+        # First check local cache
+        if shard_id in self._collections:
+            return True
+
+        # Then check the actual ChromaDB (for persistent storage)
+        collection_name = f"history_{shard_id}"
+        try:
+            existing_collections = self.chroma.list_collections()
+            for col in existing_collections:
+                if col.name == collection_name:
+                    # Load it into cache for future use
+                    self._collections[shard_id] = self.chroma.get_collection(collection_name)
+                    return True
+        except Exception:
+            pass
+
+        return False
 
     def get_collection_count(self, shard_id: str) -> int:
         """

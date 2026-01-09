@@ -206,5 +206,43 @@ def process_rfi_http(request: RFIRequest):
     )
 
 
+class PassiveWorker:
+    """
+    Simple RAG retrieval for baseline comparison.
+
+    Uses ChromaDBRepository for vector search without consensus/superposition logic.
+    This provides a fair baseline to compare against DPR-RC's enhanced retrieval.
+    """
+
+    def __init__(self):
+        from .infrastructure.passive_agent.repositories import ChromaDBRepository
+        self._repo = ChromaDBRepository()
+
+    def retrieve(
+        self,
+        query_text: str,
+        shard_id: str,
+        timestamp_context: str = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve best matching document from a shard.
+
+        Args:
+            query_text: Query to search for
+            shard_id: Which shard to search (e.g., "shard_2020")
+            timestamp_context: Optional timestamp filter (unused in simple retrieval)
+
+        Returns:
+            Best matching document or None
+        """
+        results = self._repo.query(shard_id, query_text, n_results=1)
+        if results:
+            return {
+                "content": results[0].content,
+                "metadata": results[0].metadata
+            }
+        return None
+
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
