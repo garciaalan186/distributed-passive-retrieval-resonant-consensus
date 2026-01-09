@@ -298,16 +298,14 @@ class ResearchBenchmarkSuite:
 
             print(f"Processing batch {batch_start//max_concurrent + 1}: queries {batch_start}-{batch_end-1}")
 
+            # Include timestamp_context per query (as third element in tuple)
             batch_queries = [
-                (f"query_{batch_start + i:04d}", q["question"])
+                (f"query_{batch_start + i:04d}", q["question"], q.get("timestamp_context"))
                 for i, q in enumerate(batch)
             ]
 
             try:
-                batch_results = await executor.execute_batch(
-                    batch_queries,
-                    timestamp_context=batch[0].get("timestamp_context") if batch else None
-                )
+                batch_results = await executor.execute_batch(batch_queries)
 
                 for i, result in enumerate(batch_results):
                     query_idx = batch_start + i

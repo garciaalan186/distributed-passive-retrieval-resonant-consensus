@@ -283,8 +283,7 @@ class DPRRCQueryExecutor(IQueryExecutor):
 
     async def execute_batch(
         self,
-        queries: List[tuple[str, str]],
-        timestamp_context: Optional[str] = None
+        queries: List[tuple],
     ) -> List[QueryExecutionResult]:
         """
         Execute multiple queries concurrently.
@@ -297,8 +296,9 @@ class DPRRCQueryExecutor(IQueryExecutor):
         - Otherwise: Uses asyncio.gather() for async concurrent execution
 
         Args:
-            queries: List of (query_id, query_text) tuples
-            timestamp_context: Optional temporal context for all queries
+            queries: List of tuples, either:
+                     - (query_id, query_text) for backward compatibility
+                     - (query_id, query_text, timestamp_context) for per-query context
 
         Returns:
             List of QueryExecutionResult in same order as input
@@ -308,13 +308,17 @@ class DPRRCQueryExecutor(IQueryExecutor):
 
         if multi_gpu and self._mode == "usecase":
             # Multi-GPU mode: Use ThreadPoolExecutor for true parallel GPU execution
-            return await self._execute_batch_multi_gpu(queries, timestamp_context)
+            return await self._execute_batch_multi_gpu(queries)
         else:
             # Standard async execution (single GPU or HTTP mode)
-            tasks = [
-                self.execute(query_text, query_id, timestamp_context)
-                for query_id, query_text in queries
-            ]
+            tasks = []
+            for q in queries:
+                if len(q) >= 3:
+                    query_id, query_text, timestamp_context = q[0], q[1], q[2]
+                else:
+                    query_id, query_text = q[0], q[1]
+                    timestamp_context = None
+                tasks.append(self.execute(query_text, query_id, timestamp_context))
             return await asyncio.gather(*tasks)
 
     @classmethod
@@ -337,25 +341,48 @@ class DPRRCQueryExecutor(IQueryExecutor):
                     # Use spawn to get clean processes (required for CUDA)
                     ctx = mp.get_context("spawn")
 
+                    # Capture critical environment variables to pass to spawned workers
+                    # These are needed for routing and data access
+                    env_vars = {
+                        "LOCAL_DATASET_PATH": os.getenv("LOCAL_DATASET_PATH", ""),
+                        "CHROMA_DB_PATH": os.getenv("CHROMA_DB_PATH", ""),
+                        "SLM_MODEL": os.getenv("SLM_MODEL", ""),
+                        "SLM_FAST_MODEL": os.getenv("SLM_FAST_MODEL", ""),
+                        "SLM_USE_4BIT_QUANTIZATION": os.getenv("SLM_USE_4BIT_QUANTIZATION", ""),
+                        "EMBEDDING_MODEL": os.getenv("EMBEDDING_MODEL", ""),
+                        "USE_DIRECT_SERVICES": os.getenv("USE_DIRECT_SERVICES", ""),
+                    }
+
                     # Create pool with initializer for each worker
                     cls._gpu_process_pool = ctx.Pool(
                         processes=num_workers,
                         initializer=cls._init_gpu_worker,
-                        initargs=(num_gpus,)  # Pass actual GPU count for round-robin
+                        initargs=(num_gpus, env_vars)  # Pass GPU count and env vars
                     )
                     print("Process pool created and workers initialized")
 
         return cls._gpu_process_pool
 
     @staticmethod
-    def _init_gpu_worker(num_gpus: int):
+    def _init_gpu_worker(num_gpus: int, env_vars: dict = None):
         """
-        Initialize a worker process with GPU assignment.
+        Initialize a worker process with GPU assignment and environment variables.
 
         Called once when each worker process starts. Uses the worker's
         process index modulo num_gpus for round-robin GPU assignment.
+
+        Args:
+            num_gpus: Number of GPUs to distribute workers across
+            env_vars: Dictionary of environment variables to set in worker
         """
         import os
+
+        # Set environment variables passed from parent process
+        # This is critical for spawned processes which don't inherit env vars
+        if env_vars:
+            for key, value in env_vars.items():
+                if value:  # Only set non-empty values
+                    os.environ[key] = value
 
         # Get worker identity from process name or use round-robin
         worker_name = mp.current_process().name
@@ -372,6 +399,8 @@ class DPRRCQueryExecutor(IQueryExecutor):
         os.environ["ENABLE_MULTI_GPU_WORKERS"] = "false"  # Single GPU per process
 
         print(f"Worker {worker_name} (idx={worker_idx}) assigned to GPU {gpu_id}")
+        if env_vars and env_vars.get("LOCAL_DATASET_PATH"):
+            print(f"Worker {worker_name}: LOCAL_DATASET_PATH={env_vars.get('LOCAL_DATASET_PATH')}")
 
         # Pre-load the model
         from dpr_rc.infrastructure.slm import SLMFactory
@@ -381,24 +410,32 @@ class DPRRCQueryExecutor(IQueryExecutor):
 
     async def _execute_batch_multi_gpu(
         self,
-        queries: List[tuple[str, str]],
-        timestamp_context: Optional[str] = None
+        queries: List[tuple],
     ) -> List[QueryExecutionResult]:
         """
         Execute queries in parallel using ProcessPoolExecutor.
 
         Each query is processed by a worker with its own GPU and model instance.
         This avoids asyncio overhead and enables true parallel GPU execution.
+
+        Args:
+            queries: List of tuples, either:
+                     - (query_id, query_text) for backward compatibility
+                     - (query_id, query_text, timestamp_context) for per-query context
         """
         num_workers = int(os.getenv("NUM_WORKER_THREADS", "2"))
         num_gpus = int(os.getenv("NUM_GPUS", "2"))  # Actual GPU count
         pool = self._get_gpu_process_pool(num_workers, num_gpus)
 
-        # Prepare args for each query
-        work_items = [
-            (query_text, query_id, timestamp_context)
-            for query_id, query_text in queries
-        ]
+        # Prepare args for each query with per-query timestamp_context
+        work_items = []
+        for q in queries:
+            if len(q) >= 3:
+                query_id, query_text, timestamp_context = q[0], q[1], q[2]
+            else:
+                query_id, query_text = q[0], q[1]
+                timestamp_context = None
+            work_items.append((query_text, query_id, timestamp_context))
 
         # Execute in parallel using process pool
         loop = asyncio.get_event_loop()
