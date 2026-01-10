@@ -31,3 +31,9 @@ htmlcov/
 
 # Logs
 *.log
+install_log*.txt
+
+# Benchmark artifacts
+baseline_*_results.txt
+benchmark_summary.json
+benchmark_results_local/
