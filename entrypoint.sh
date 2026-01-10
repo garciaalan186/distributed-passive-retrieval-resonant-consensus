@@ -6,5 +6,5 @@ if [ "$ROLE" = "passive" ]; then
     exec uvicorn dpr_rc.passive_agent:app --host 0.0.0.0 --port ${PORT:-8080}
 else
     echo "Running benchmark mode..."
-    exec python -m benchmark.benchmark
+    exec python run_benchmark.py ${BENCHMARK_SCALE:-small}
 fi
