@@ -37,3 +37,15 @@ install_log*.txt
 baseline_*_results.txt
 benchmark_summary.json
 benchmark_results_local/
+
+# Build artifacts
+*.whl
+*.deb
+flash-attention/
+
+# Foveated routing (removed)
+foveated_index/
+temp_foveated_data/
+
+# Debug
+analysis_debug/
