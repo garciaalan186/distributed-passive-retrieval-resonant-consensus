@@ -4,6 +4,11 @@ from enum import Enum
 import time
 import uuid
 
+from dpr_rc.config import get_dpr_config
+
+# Load consensus config for RCP defaults
+_consensus_config = get_dpr_config().get('consensus', {})
+
 class ComponentType(str, Enum):
     ACTIVE_CONTROLLER = "ActiveAgentController"
     PASSIVE_WORKER = "PassiveAgentWorker"
@@ -84,11 +89,11 @@ class EmbeddingInfo(BaseModel):
 
 class RCPConfig(BaseModel):
     """Resonant Consensus Protocol v4 Configuration"""
-    theta: float = 0.5  # Cluster approval threshold (Eq. 1): fraction of agents in cluster needed to approve
-    tau: float = 0.6    # Consensus threshold (Eq. 4): fraction of clusters needed for consensus
-    vote_threshold: float = 0.5  # Confidence threshold for binary voting: confidence >= threshold → vote = 1
+    theta: float = _consensus_config.get('theta', 0.5)  # Cluster approval threshold (Eq. 1)
+    tau: float = _consensus_config.get('tau', 0.6)    # Consensus threshold (Eq. 4)
+    vote_threshold: float = _consensus_config.get('vote_threshold', 0.5)  # Confidence threshold for binary voting
 
     # Temporal cluster definitions for DPR-RC
     # C_RECENT: shards from 2020 onwards (newer historical versions)
     # C_OLDER: shards before 2020 (older historical versions)
-    recent_epoch_start: str = "2020-01-01"
+    recent_epoch_start: str = get_dpr_config().get('epoch', {}).get('recent_start', "2020-01-01")

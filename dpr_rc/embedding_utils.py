@@ -30,9 +30,13 @@ from dataclasses import dataclass
 from pathlib import Path
 import tempfile
 
-# Default embedding model
-DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
-EMBEDDING_DIMENSION = 384  # Dimension for all-MiniLM-L6-v2
+from dpr_rc.config import get_dpr_config
+
+# Load defaults from config (with fallbacks for backward compatibility)
+_embedding_config = get_dpr_config().get('embedding', {})
+DEFAULT_EMBEDDING_MODEL = _embedding_config.get('model', "all-MiniLM-L6-v2")
+EMBEDDING_DIMENSION = _embedding_config.get('dimension', 384)
+_WORD_LIMIT = _embedding_config.get('word_limit', 20)
 
 
 @dataclass
@@ -101,7 +105,7 @@ def _generate_fallback_embeddings(texts: List[str], dim: int) -> np.ndarray:
 
         # Add word-level components for basic semantic similarity
         words = set(text.lower().split())
-        for word in list(words)[:20]:  # Limit to first 20 words
+        for word in list(words)[:_WORD_LIMIT]:  # Limit to configured word limit
             word_hash = hashlib.md5(word.encode()).digest()
             word_seed = int.from_bytes(word_hash[:4], 'big')
             word_rng = np.random.RandomState(word_seed)

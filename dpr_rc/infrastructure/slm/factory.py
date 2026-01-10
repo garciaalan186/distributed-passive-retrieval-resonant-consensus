@@ -11,6 +11,7 @@ import torch
 from typing import Dict, Optional
 from dpr_rc.domain.slm.services import PromptBuilder, ResponseParser, InferenceEngine
 from dpr_rc.infrastructure.slm.backends import TransformersBackend
+from dpr_rc.config import get_dpr_config
 
 
 class SLMFactory:
@@ -111,8 +112,12 @@ class SLMFactory:
         Returns:
             Configured fast InferenceEngine
         """
-        model_id = os.getenv("SLM_FAST_MODEL", "Qwen/Qwen2-0.5B-Instruct")
-        max_tokens = int(os.getenv("SLM_FAST_MAX_TOKENS", "100"))
+        slm_config = get_dpr_config().get('slm', {})
+        models_config = slm_config.get('models', {})
+        gen_config = slm_config.get('generation', {})
+
+        model_id = os.getenv("SLM_FAST_MODEL", models_config.get('fast', "Qwen/Qwen2-0.5B-Instruct"))
+        max_tokens = int(os.getenv("SLM_FAST_MAX_TOKENS", str(gen_config.get('fast_max_tokens', 100))))
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -186,8 +191,12 @@ class SLMFactory:
         Returns:
             Configured InferenceEngine
         """
-        model_id = os.getenv("SLM_MODEL", "Qwen/Qwen2-0.5B-Instruct")
-        max_tokens = int(os.getenv("SLM_MAX_TOKENS", "150"))
+        slm_config = get_dpr_config().get('slm', {})
+        models_config = slm_config.get('models', {})
+        gen_config = slm_config.get('generation', {})
+
+        model_id = os.getenv("SLM_MODEL", models_config.get('default', "Qwen/Qwen2-0.5B-Instruct"))
+        max_tokens = int(os.getenv("SLM_MAX_TOKENS", str(gen_config.get('max_tokens', 150))))
         use_4bit = os.getenv("SLM_USE_4BIT_QUANTIZATION", "false").lower() == "true"
 
         if device is None:
@@ -231,9 +240,13 @@ class SLMFactory:
         Returns:
             InferenceEngine pinned to specified GPU
         """
+        slm_config = get_dpr_config().get('slm', {})
+        models_config = slm_config.get('models', {})
+        gen_config = slm_config.get('generation', {})
+
         device = f"cuda:{gpu_id}"
-        model_id = os.getenv("SLM_MODEL", "microsoft/Phi-3-mini-4k-instruct")
-        max_tokens = int(os.getenv("SLM_MAX_TOKENS", "150"))
+        model_id = os.getenv("SLM_MODEL", models_config.get('multi_gpu', "microsoft/Phi-3-mini-4k-instruct"))
+        max_tokens = int(os.getenv("SLM_MAX_TOKENS", str(gen_config.get('max_tokens', 150))))
         use_4bit = os.getenv("SLM_USE_4BIT_QUANTIZATION", "false").lower() == "true"
 
         # Domain Services

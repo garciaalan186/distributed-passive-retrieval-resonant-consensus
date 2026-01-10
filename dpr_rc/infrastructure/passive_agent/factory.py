@@ -22,6 +22,7 @@ from dpr_rc.infrastructure.passive_agent.clients import HttpSLMClient
 from dpr_rc.infrastructure.passive_agent.adapters import LoggerAdapter
 from dpr_rc.logging_utils import StructuredLogger, ComponentType
 from dpr_rc.embedding_utils import DEFAULT_EMBEDDING_MODEL
+from dpr_rc.config import get_dpr_config
 
 
 class PassiveAgentFactory:
@@ -36,8 +37,8 @@ class PassiveAgentFactory:
         slm_url: str,
         worker_id: str,
         cluster_id: str,
-        embedding_model: str = DEFAULT_EMBEDDING_MODEL,
-        default_epoch_year: int = 2020,
+        embedding_model: str = None,
+        default_epoch_year: int = None,
     ) -> ProcessRFIUseCase:
         """
         Create fully wired ProcessRFIUseCase.
@@ -52,6 +53,17 @@ class PassiveAgentFactory:
         Returns:
             Fully configured ProcessRFIUseCase instance
         """
+        # Load config defaults
+        config = get_dpr_config()
+        worker_config = config.get('worker', {})
+        slm_service_config = config.get('slm', {}).get('service', {})
+
+        # Apply defaults from config if not provided
+        if embedding_model is None:
+            embedding_model = config.get('embedding', {}).get('model', DEFAULT_EMBEDDING_MODEL)
+        if default_epoch_year is None:
+            default_epoch_year = worker_config.get('epoch_year', 2020)
+
         # Infrastructure: Repositories
         chroma_repo = ChromaDBRepository(
             chroma_client=None,  # Will create default client
@@ -71,7 +83,7 @@ class PassiveAgentFactory:
         else:
             slm_client = HttpSLMClient(
                 slm_service_url=slm_url,
-                timeout=30,
+                timeout=slm_service_config.get('timeout', 30),
                 worker_id=worker_id,
             )
 
@@ -79,11 +91,9 @@ class PassiveAgentFactory:
         structured_logger = StructuredLogger(ComponentType.PASSIVE_WORKER)
         logger = LoggerAdapter(structured_logger)
 
-        # Domain Services
+        # Domain Services (uses config defaults via VerificationService constructor)
         verification_service = VerificationService(
             slm_client=slm_client,
-            max_retries=3,
-            base_delay=2.0,
         )
 
         quadrant_service = QuadrantService()
@@ -118,12 +128,18 @@ class PassiveAgentFactory:
         Returns:
             Configured ProcessRFIUseCase
         """
-        # Read environment variables
-        slm_url = os.getenv("SLM_SERVICE_URL", "http://localhost:8081")
-        worker_id = os.getenv("WORKER_ID", "worker-1")
-        cluster_id = os.getenv("CLUSTER_ID", "cluster-alpha")
-        embedding_model = os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
-        epoch_year = int(os.getenv("EPOCH_YEAR", "2020"))
+        # Load config defaults
+        config = get_dpr_config()
+        worker_config = config.get('worker', {})
+        slm_service_config = config.get('slm', {}).get('service', {})
+        embedding_config = config.get('embedding', {})
+
+        # Read environment variables (with config as fallback)
+        slm_url = os.getenv("SLM_SERVICE_URL", slm_service_config.get('url', "http://localhost:8081"))
+        worker_id = os.getenv("WORKER_ID", worker_config.get('id', "worker-1"))
+        cluster_id = os.getenv("CLUSTER_ID", worker_config.get('cluster_id', "cluster-alpha"))
+        embedding_model = os.getenv("EMBEDDING_MODEL", embedding_config.get('model', DEFAULT_EMBEDDING_MODEL))
+        epoch_year = int(os.getenv("EPOCH_YEAR", str(worker_config.get('epoch_year', 2020))))
 
         return PassiveAgentFactory.create_process_rfi_use_case(
             slm_url=slm_url,

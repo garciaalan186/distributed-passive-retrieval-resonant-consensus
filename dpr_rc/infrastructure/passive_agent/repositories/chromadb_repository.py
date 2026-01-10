@@ -14,6 +14,10 @@ import numpy as np
 from dpr_rc.domain.passive_agent.repositories import IEmbeddingRepository, RetrievalResult
 from dpr_rc.embedding_utils import embed_query, DEFAULT_EMBEDDING_MODEL
 from dpr_rc.logging_utils import StructuredLogger, ComponentType
+from dpr_rc.config import get_dpr_config
+
+# Load query config for batch size
+_query_config = get_dpr_config().get('query', {})
 
 
 class ChromaDBRepository:
@@ -107,7 +111,7 @@ class ChromaDBRepository:
             metadatas.append(doc.get("metadata", {}))
 
         # Insert in batches to avoid memory issues
-        batch_size = 1000
+        batch_size = _query_config.get('batch_size', 1000)
         inserted = 0
 
         for i in range(0, len(ids), batch_size):
@@ -153,7 +157,7 @@ class ChromaDBRepository:
         """
         collection = self.create_collection(shard_id)
 
-        batch_size = 1000
+        batch_size = _query_config.get('batch_size', 1000)
         inserted = 0
 
         for i in range(0, len(doc_ids), batch_size):

@@ -4,11 +4,26 @@ import os
 import hashlib
 from typing import Any, Dict, Optional
 from pythonjsonlogger import jsonlogger
+
+# Lazy import to avoid circular dependency
+def _get_logging_config():
+    from dpr_rc.config import get_dpr_config
+    return get_dpr_config().get('logging', {})
+
+# Need to import models after config to avoid circular imports
 from .models import LogEntry, ComponentType, EventType
 
-# Configuration for full payload logging
-ENABLE_FULL_PAYLOAD_LOGGING = os.getenv("ENABLE_FULL_PAYLOAD_LOGGING", "true").lower() == "true"
-MAX_PAYLOAD_SIZE_BYTES = int(os.getenv("MAX_PAYLOAD_SIZE_BYTES", "100000"))
+# Configuration for full payload logging (env vars override config)
+_logging_config = _get_logging_config()
+ENABLE_FULL_PAYLOAD_LOGGING = os.getenv(
+    "ENABLE_FULL_PAYLOAD_LOGGING",
+    str(_logging_config.get('enable_full_payload', True)).lower()
+).lower() == "true"
+MAX_PAYLOAD_SIZE_BYTES = int(os.getenv(
+    "MAX_PAYLOAD_SIZE_BYTES",
+    str(_logging_config.get('max_payload_size', 100000))
+))
+_LOG_SNIPPET_LENGTH = _logging_config.get('snippet_length', 200)
 
 # Initialize Google Cloud Logging Client (optional)
 # Only attempt GCP logging if USE_GCP_LOGGING is set
@@ -68,7 +83,7 @@ class StructuredLogger:
             event_type=event_type,
             payload_hash=payload_hash,
             metrics=metrics or {},
-            message=str(payload)[:200] # Log a snippet for debug
+            message=str(payload)[:_LOG_SNIPPET_LENGTH] # Log a snippet for debug
         )
 
         self.logger.info(json.dumps(entry.model_dump(), default=str))

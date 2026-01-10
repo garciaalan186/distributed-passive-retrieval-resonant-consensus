@@ -41,14 +41,20 @@ from .debug_utils import (
 )
 from .infrastructure.passive_agent import PassiveAgentFactory
 from .application.passive_agent import ProcessRFIRequest, ProcessRFIResponse
+from .config import get_dpr_config
 
-# Configuration
+# Load configuration
+_config = get_dpr_config()
+_worker_config = _config.get('worker', {})
+_embedding_config = _config.get('embedding', {})
+
+# Configuration (env vars override config)
 WORKER_ID = os.getenv("HOSTNAME", f"worker-{os.getpid()}")
-WORKER_EPOCH = os.getenv("WORKER_EPOCH", "2020")  # Default epoch
+WORKER_EPOCH = os.getenv("WORKER_EPOCH", str(_worker_config.get('epoch_year', 2020)))
 HISTORY_BUCKET = os.getenv("HISTORY_BUCKET", None)
-HISTORY_SCALE = os.getenv("HISTORY_SCALE", "medium")
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
-CLUSTER_ID = os.getenv("CLUSTER_ID", "cluster-alpha")
+HISTORY_SCALE = os.getenv("HISTORY_SCALE", _worker_config.get('scale', "medium"))
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", _embedding_config.get('model', "all-MiniLM-L6-v2"))
+CLUSTER_ID = os.getenv("CLUSTER_ID", _worker_config.get('cluster_id', "cluster-alpha"))
 
 logger = StructuredLogger(ComponentType.PASSIVE_WORKER)
 
@@ -245,4 +251,4 @@ class PassiveWorker:
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", str(_worker_config.get('port', 8080)))))

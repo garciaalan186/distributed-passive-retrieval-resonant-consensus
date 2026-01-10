@@ -26,6 +26,10 @@ from dpr_rc.debug_utils import (
     debug_query_received, debug_query_enhancement, debug_routing,
     debug_consensus_calculation, debug_final_response
 )
+from dpr_rc.config import get_dpr_config
+
+# Load consensus config
+_consensus_config = get_dpr_config().get('consensus', {})
 
 
 class ProcessQueryUseCase:
@@ -198,13 +202,18 @@ class ProcessQueryUseCase:
                 variance = sum((x - mean_score) ** 2 for x in scores) / len(scores)
                 std_score = math.sqrt(variance)
 
-                # Quadrant Classification per spec
+                # Quadrant Classification per spec using config thresholds
                 # High mean + low std = strong consensus (Symmetric Resonance)
                 # Per Mathematical Model: "High-entropy bridge concepts agreed upon by diverse contexts"
-                if mean_score > 0.7 and std_score < 0.2:
+                mean_threshold = _consensus_config.get('mean_threshold', 0.7)
+                std_threshold = _consensus_config.get('std_threshold', 0.2)
+                asymmetric_threshold = _consensus_config.get('asymmetric_threshold', 0.4)
+                dissonant_threshold = _consensus_config.get('dissonant_threshold', 0.3)
+
+                if mean_score > mean_threshold and std_score < std_threshold:
                     quadrant = "SYMMETRIC_RESONANCE"
                     consensus_set.append(data["content"])
-                elif mean_score > 0.4:
+                elif mean_score > asymmetric_threshold:
                     quadrant = "ASYMMETRIC"
                     perspectival_set.append({
                         "claim": data["content"],
@@ -215,7 +224,7 @@ class ProcessQueryUseCase:
                 else:
                     quadrant = "DISSONANT_POLARIZATION"
                     # Include significantly dissonant claims as perspectives if they have some support
-                    if mean_score > 0.3:
+                    if mean_score > dissonant_threshold:
                         perspectival_set.append({
                             "claim": data["content"],
                             "snapshot_views": {v.worker_id: v.confidence_score for v in data["votes"]},
@@ -241,12 +250,16 @@ class ProcessQueryUseCase:
             }
 
             # 5. Generate Response (A*) - Construct answer from superposition
+            confidence_config = _consensus_config.get('confidence', {})
+            consensus_confidence = confidence_config.get('consensus', 0.95)
+            perspectival_confidence = confidence_config.get('perspectival', 0.7)
+
             if consensus_set:
                 final_answer = " ".join(consensus_set)
                 if perspectival_set:
                     final_answer += "\n\nAdditionally, there are evolving perspectives: " + \
                                    "; ".join([p['claim'] for p in perspectival_set])
-                confidence = 0.95
+                confidence = consensus_confidence
             elif perspectival_set:
                 # Uncertainty case: Present options per spec
                 # "allows A* to generate a nuanced reply acknowledging both the agreed facts
@@ -254,7 +267,7 @@ class ProcessQueryUseCase:
                 options = [f"- {p['claim']} (Agreement: {p['metrics']['mean']:.2f})"
                           for p in perspectival_set]
                 final_answer = "The historical record shows varying perspectives:\n" + "\n".join(options)
-                confidence = 0.7
+                confidence = perspectival_confidence
             else:
                 final_answer = "No relevant information found in the historical record."
                 confidence = 0.0

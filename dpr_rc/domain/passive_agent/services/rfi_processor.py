@@ -10,6 +10,10 @@ from typing import Dict, Any, List, Optional, Protocol
 from ..entities import QuadrantCoordinates
 from .verification_service import VerificationService
 from .quadrant_service import QuadrantService
+from dpr_rc.config import get_dpr_config
+
+# Load query config
+_query_config = get_dpr_config().get('query', {})
 
 
 class RetrievalResult:
@@ -144,8 +148,9 @@ class RFIProcessor:
         for shard_id in target_shards:
             try:
                 # Retrieve from this shard using ENHANCED query
+                n_results = _query_config.get('n_results_per_shard', 3)
                 results = self.embedding_repo.query(
-                    shard_id=shard_id, query_text=query_text, n_results=3
+                    shard_id=shard_id, query_text=query_text, n_results=n_results
                 )
 
                 if not results or len(results) == 0:
@@ -193,6 +198,7 @@ class RFIProcessor:
                 document_ids = [document_id] if document_id else []
 
                 # Create vote
+                snippet_length = _query_config.get('snippet_length', 500)
                 vote = Vote(
                     trace_id=trace_id,
                     worker_id=self.worker_id,
@@ -201,7 +207,7 @@ class RFIProcessor:
                     confidence_score=adjusted_confidence,
                     binary_vote=binary_vote,
                     resonance_vector=vector,
-                    content_snippet=top_result.content[:500],
+                    content_snippet=top_result.content[:snippet_length],
                     author_cluster=self.cluster_id,  # Worker is author of this artifact
                     document_ids=document_ids,
                 )

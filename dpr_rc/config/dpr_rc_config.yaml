@@ -1,0 +1,79 @@
+# DPR-RC Configuration
+# Centralized configuration for the Distributed Passive Retrieval with Resonant Consensus system
+
+# SLM Service Configuration
+slm:
+  models:
+    default: "Qwen/Qwen2-0.5B-Instruct"
+    fast: "Qwen/Qwen2-0.5B-Instruct"
+    multi_gpu: "microsoft/Phi-3-mini-4k-instruct"
+  generation:
+    max_tokens: 150
+    fast_max_tokens: 100
+    do_sample: false
+  service:
+    url: "http://localhost:8081"
+    timeout: 30
+    max_retries: 3
+    base_delay: 2.0
+
+# Embedding Configuration
+embedding:
+  model: "all-MiniLM-L6-v2"
+  dimension: 384
+  word_limit: 20  # fallback embedding word limit
+
+# Consensus Thresholds (RCP v4)
+consensus:
+  theta: 0.5           # cluster approval threshold (Eq. 1)
+  tau: 0.6             # consensus threshold (Eq. 4)
+  vote_threshold: 0.5  # confidence threshold for binary voting
+  mean_threshold: 0.7  # high consensus score threshold
+  std_threshold: 0.2   # low standard deviation for consensus
+  asymmetric_threshold: 0.4
+  dissonant_threshold: 0.3
+  confidence:
+    consensus: 0.95
+    perspectival: 0.7
+
+# Verification Service
+verification:
+  content_limit: 2000
+  summary_limit: 500
+  fallback_threshold: 0.3
+  weights:
+    token_overlap: 0.6
+    length_factor: 0.4
+  length_reference: 200.0
+
+# Quadrant Calculation
+quadrant:
+  coord_base: 100
+  x_weights: [0.5, 0.5]
+  y_weights: [0.3, 0.7]
+  rounding_precision: 2
+
+# Query Processing
+query:
+  n_results_per_shard: 3
+  batch_size: 1000
+  snippet_length: 500
+
+# Worker Defaults
+worker:
+  id: "worker-1"
+  cluster_id: "cluster-alpha"
+  epoch_year: 2020
+  scale: "medium"
+  port: 8080
+
+# Logging
+logging:
+  enable_full_payload: true
+  max_payload_size: 100000
+  snippet_length: 200
+
+# Epoch Configuration
+epoch:
+  recent_start: "2020-01-01"
+  default_shard: "shard_2020"

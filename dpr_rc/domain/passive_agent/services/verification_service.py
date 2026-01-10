@@ -8,6 +8,10 @@ This is pure domain logic with no infrastructure dependencies.
 import time
 from typing import Dict, Any, Optional, Protocol
 from ..entities import VerificationResult
+from dpr_rc.config import get_dpr_config
+
+# Load verification config
+_verification_config = get_dpr_config().get('verification', {})
 
 
 class ISLMClient(Protocol):
@@ -59,20 +63,21 @@ class VerificationService:
     def __init__(
         self,
         slm_client: ISLMClient,
-        max_retries: int = 3,
-        base_delay: float = 2.0,
+        max_retries: int = None,
+        base_delay: float = None,
     ):
         """
         Initialize verification service.
 
         Args:
             slm_client: Client for SLM verification calls
-            max_retries: Maximum number of retry attempts
-            base_delay: Base delay for exponential backoff (seconds)
+            max_retries: Maximum number of retry attempts (default from config)
+            base_delay: Base delay for exponential backoff in seconds (default from config)
         """
+        slm_service_config = get_dpr_config().get('slm', {}).get('service', {})
         self.slm_client = slm_client
-        self.max_retries = max_retries
-        self.base_delay = base_delay
+        self.max_retries = max_retries if max_retries is not None else slm_service_config.get('max_retries', 3)
+        self.base_delay = base_delay if base_delay is not None else slm_service_config.get('base_delay', 2.0)
 
     def verify(
         self,
@@ -109,11 +114,13 @@ class VerificationService:
                 time.sleep(delay)
 
             try:
+                content_limit = _verification_config.get('content_limit', 2000)
+                summary_limit = _verification_config.get('summary_limit', 500)
                 result = self.slm_client.verify(
                     query=query,
-                    content=content[:2000],  # Limit content size
-                    shard_summary=shard_summary[:500] if shard_summary else None,
-                    epoch_summary=epoch_summary[:500] if epoch_summary else None,
+                    content=content[:content_limit],  # Limit content size
+                    shard_summary=shard_summary[:summary_limit] if shard_summary else None,
+                    epoch_summary=epoch_summary[:summary_limit] if epoch_summary else None,
                     trace_id=trace_id,
                 )
 
@@ -176,18 +183,24 @@ class VerificationService:
                 depth_penalty=float(depth),
             )
 
-        # Calculate heuristic score
+        # Calculate heuristic score using config weights
+        weights = _verification_config.get('weights', {})
+        token_weight = weights.get('token_overlap', 0.6)
+        length_weight = weights.get('length_factor', 0.4)
+        length_ref = _verification_config.get('length_reference', 200.0)
+
         base_score = len(intersection) / len(union)
-        length_factor = min(1.0, len(content) / 200.0)
-        v_score = (base_score * 0.6 + length_factor * 0.4)
+        length_factor = min(1.0, len(content) / length_ref)
+        v_score = (base_score * token_weight + length_factor * length_weight)
 
         # Clamp to [0, 1]
         confidence = max(0.0, min(1.0, v_score))
+        fallback_threshold = _verification_config.get('fallback_threshold', 0.3)
 
         return VerificationResult(
             content=content,
             confidence_score=confidence,
-            verified=confidence >= 0.3,
+            verified=confidence >= fallback_threshold,
             explanation=f"Fallback heuristic (token overlap: {len(intersection)}/{len(union)})",
             depth_penalty=float(depth),
         )
