@@ -182,6 +182,7 @@ def run_benchmark(scale: str, generate_data: bool = False):
     print("Baseline:")
     print(f"  Accuracy: {comparison['baseline_correct_rate']*100:.1f}%")
     print(f"  Hallucination Rate: {comparison['baseline_hallucination_rate']*100:.1f}%")
+    print(f"  Mean Latency: {comparison['baseline_mean_latency']/1000:.1f}s")
     print()
     print(f"Results saved to: {comparison_path}")
 
