@@ -63,19 +63,6 @@ python3 run_benchmark.py --scale mini --baseline
 pytest tests/ -v
 ```
 
-### Data Generation
-
-```bash
-# Generate synthetic data + embeddings
-python -m benchmark.generate_and_upload --scale medium --model all-MiniLM-L6-v2
-
-# Retroactive re-embedding with new model
-python -m benchmark.generate_and_upload --retroactive-embed --scale medium --model text-embedding-3-small
-
-# List available data
-python -m benchmark.generate_and_upload --list
-```
-
 ## Key Architectural Patterns
 
 ### Lazy Loading Pattern
@@ -121,8 +108,7 @@ This avoids HTTP/Redis overhead for local testing.
 Uses **phonotactic noun generator** and **alternate universe physics** to create datasets with zero overlap with real-world knowledge. This eliminates LLM parametric knowledge confounds in evaluation.
 
 **Key files:**
-- `benchmark/synthetic_history.py`: Generator implementation
-- `benchmark/generate_and_upload.py`: Data preparation
+- `benchmark/synthetic/`: Generator implementation (SyntheticHistoryGeneratorV2)
 
 ## Mathematical Model Reference
 
