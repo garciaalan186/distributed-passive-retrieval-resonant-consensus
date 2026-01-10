@@ -21,24 +21,20 @@ from benchmark.synthetic import SyntheticHistoryGeneratorV2
 from benchmark.domain.services import EvaluationService
 from benchmark.core import HallucinationDetector, ReportGenerator
 from benchmark.core.models import SuperpositionEvaluation, HallucinationAnalysis, ResourceMetrics
+from benchmark.config import get_config, get_all_scales
 from dpr_rc.infrastructure.passive_agent.repositories import ChromaDBRepository
 
 
 class ResearchBenchmarkSuite:
     """Publication-ready benchmark with complete audit trails"""
 
-    # Scale configurations
-    ALL_SCALES = {
-        "mini": {"name": "mini", "events_per_topic_per_year": 2, "num_domains": 1},
-        "small": {"name": "small", "events_per_topic_per_year": 10, "num_domains": 2},
-        "medium": {"name": "medium", "events_per_topic_per_year": 25, "num_domains": 3},
-        "large": {"name": "large", "events_per_topic_per_year": 50, "num_domains": 4},
-        "stress": {"name": "stress", "events_per_topic_per_year": 100, "num_domains": 5},
-    }
-
     def __init__(self, output_dir: str = "benchmark_results_research"):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
+
+        # Load configuration
+        self._config = get_config()
+        self._all_scales = get_all_scales()
 
         # Parse scale levels from environment
         self.scale_levels = self._parse_scale_levels()
@@ -46,11 +42,12 @@ class ResearchBenchmarkSuite:
         # Executor configuration
         self.use_new_executor = os.getenv("USE_NEW_EXECUTOR", "false").lower() == "true"
 
-        # Service URLs
-        self.controller_url = os.getenv("CONTROLLER_URL", "http://localhost:8080")
-        self.worker_url = os.getenv("PASSIVE_WORKER_URL", "http://localhost:8082")
-        self.slm_service_url = os.getenv("SLM_SERVICE_URL", "http://localhost:8081")
-        self.slm_timeout = float(os.getenv("SLM_TIMEOUT", "30.0"))
+        # Service URLs (env vars override config)
+        services_config = self._config.get('services', {})
+        self.controller_url = os.getenv("CONTROLLER_URL", services_config.get('controller_url', "http://localhost:8080"))
+        self.worker_url = os.getenv("PASSIVE_WORKER_URL", services_config.get('passive_worker_url', "http://localhost:8082"))
+        self.slm_service_url = os.getenv("SLM_SERVICE_URL", services_config.get('slm_service_url', "http://localhost:8081"))
+        self.slm_timeout = float(os.getenv("SLM_TIMEOUT", str(services_config.get('timeouts', {}).get('slm', 30.0))))
 
         # Initialize components
         self.hallucination_detector = HallucinationDetector(
@@ -67,19 +64,19 @@ class ResearchBenchmarkSuite:
         requested_scale = os.getenv("BENCHMARK_SCALE", "all").lower().strip()
 
         if requested_scale == "all":
-            return list(self.ALL_SCALES.values())
+            return list(self._all_scales.values())
 
         requested_names = [s.strip() for s in requested_scale.split(",")]
         scale_levels = []
         for name in requested_names:
-            if name in self.ALL_SCALES:
-                scale_levels.append(self.ALL_SCALES[name])
+            if name in self._all_scales:
+                scale_levels.append(self._all_scales[name])
             else:
-                print(f"Warning: Unknown scale '{name}', skipping. Valid: {list(self.ALL_SCALES.keys())}")
+                print(f"Warning: Unknown scale '{name}', skipping. Valid: {list(self._all_scales.keys())}")
 
         if not scale_levels:
             print(f"Error: No valid scales specified. Using 'small' as default.")
-            scale_levels = [self.ALL_SCALES["small"]]
+            scale_levels = [self._all_scales["small"]]
 
         return scale_levels
 
@@ -473,11 +470,12 @@ class ResearchBenchmarkSuite:
                 response = dprrc.get("response", "")
                 confidence = dprrc.get("confidence", 0)
 
+                eval_config = self._config.get('evaluation', {})
                 correctness_result = EvaluationService.evaluate_superposition_correctness(
                     response=response,
                     expected_entities=question_entities,
-                    recall_threshold=0.5,
-                    min_response_length=10,
+                    recall_threshold=eval_config.get('recall_threshold', 0.5),
+                    min_response_length=eval_config.get('min_response_length', 20),
                     superposition_data=dprrc.get("superposition")
                 )
 
@@ -527,11 +525,12 @@ class ResearchBenchmarkSuite:
             if baseline.get("success"):
                 response = baseline.get("response", "")
 
+                eval_config = self._config.get('evaluation', {})
                 correctness_result = EvaluationService.evaluate_correctness(
                     response=response,
                     expected_entities=question_entities,
-                    recall_threshold=0.5,
-                    min_response_length=20
+                    recall_threshold=eval_config.get('recall_threshold', 0.5),
+                    min_response_length=eval_config.get('min_response_length', 20)
                 )
 
                 if correctness_result.is_correct:

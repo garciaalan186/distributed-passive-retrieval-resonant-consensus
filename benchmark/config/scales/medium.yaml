@@ -1,0 +1,7 @@
+# Medium Scale Configuration
+# Standard benchmark testing
+
+name: medium
+events_per_topic_per_year: 25
+num_domains: 3
+perspectives_per_event: 3

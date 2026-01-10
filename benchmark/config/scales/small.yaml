@@ -1,0 +1,7 @@
+# Small Scale Configuration
+# Development iteration testing
+
+name: small
+events_per_topic_per_year: 10
+num_domains: 2
+perspectives_per_event: 2

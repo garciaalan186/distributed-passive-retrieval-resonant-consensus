@@ -1,0 +1,7 @@
+# Mini Scale Configuration
+# Quick smoke test with minimal data
+
+name: mini
+events_per_topic_per_year: 2
+num_domains: 1
+perspectives_per_event: 2

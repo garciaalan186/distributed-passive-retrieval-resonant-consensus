@@ -24,31 +24,16 @@ from benchmark.synthetic.models import (
 from benchmark.synthetic.phonotactic import PhonotacticGenerator
 from benchmark.synthetic.physics import AlternatePhysics
 from benchmark.synthetic.domain import AlternateResearchDomain
+from benchmark.config import get_config, get_all_scales
 
 
-# Scale configurations for different benchmark sizes
-SCALE_CONFIGS = {
-    "mini": {
-        "events_per_topic_per_year": 10,
-        "perspectives_per_event": 2,
-        "num_domains": 2
-    },
-    "small": {
-        "events_per_topic_per_year": 25,
-        "perspectives_per_event": 2,
-        "num_domains": 3
-    },
-    "medium": {
-        "events_per_topic_per_year": 50,
-        "perspectives_per_event": 3,
-        "num_domains": 4
-    },
-    "large": {
-        "events_per_topic_per_year": 100,
-        "perspectives_per_event": 3,
-        "num_domains": 5
-    }
-}
+def _get_scale_configs() -> Dict:
+    """Load scale configurations from YAML config files."""
+    return get_all_scales()
+
+
+# For backward compatibility
+SCALE_CONFIGS = _get_scale_configs()
 
 
 class SyntheticHistoryGeneratorV2:
@@ -59,15 +44,18 @@ class SyntheticHistoryGeneratorV2:
 
     def __init__(
         self,
-        start_year: int = 2015,
-        end_year: int = 2025,
+        start_year: int = None,
+        end_year: int = None,
         events_per_topic_per_year: int = 100,
         perspectives_per_event: int = 3,
         num_domains: int = 4,
-        seed: int = 42
+        seed: int = None
     ):
-        self.start_year = start_year
-        self.end_year = end_year
+        # Load defaults from config
+        synthetic_config = get_config().get('synthetic', {})
+        self.start_year = start_year if start_year is not None else synthetic_config.get('start_year', 2015)
+        self.end_year = end_year if end_year is not None else synthetic_config.get('end_year', 2025)
+        seed = seed if seed is not None else synthetic_config.get('seed', 42)
         self.events_per_topic_per_year = events_per_topic_per_year
         self.perspectives_per_event = perspectives_per_event
         self.rng = random.Random(seed)

@@ -27,6 +27,7 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 from typing import Optional, List, Union
 
 from benchmark.domain.interfaces import IQueryExecutor, QueryExecutionResult
+from benchmark.config import get_config
 from dpr_rc.application.use_cases import ProcessQueryUseCase
 from dpr_rc.application.dtos import ProcessQueryRequest
 from dpr_rc.infrastructure.services import SimpleRouterService, DirectSLMService, DirectWorkerService
@@ -57,7 +58,7 @@ class DPRRCQueryExecutor(IQueryExecutor):
         self,
         use_case: Optional[ProcessQueryUseCase] = None,
         controller_url: Optional[str] = None,
-        timeout: float = 60.0,
+        timeout: Optional[float] = None,
         enable_query_enhancement: bool = True
     ):
         """
@@ -86,9 +87,13 @@ class DPRRCQueryExecutor(IQueryExecutor):
             )
             executor = DPRRCQueryExecutor(use_case=use_case)
         """
+        # Load executor config
+        self._executor_config = get_config().get('executor', {})
+        services_config = get_config().get('services', {})
+
         self._use_case = use_case
-        self._controller_url = (controller_url or "http://localhost:8080").rstrip('/')
-        self._timeout = timeout
+        self._controller_url = (controller_url or services_config.get('controller_url', "http://localhost:8080")).rstrip('/')
+        self._timeout = timeout if timeout is not None else services_config.get('timeouts', {}).get('query', 60.0)
         self._enable_enhancement = enable_query_enhancement
 
         # Determine execution mode
@@ -423,8 +428,9 @@ class DPRRCQueryExecutor(IQueryExecutor):
                      - (query_id, query_text) for backward compatibility
                      - (query_id, query_text, timestamp_context) for per-query context
         """
-        num_workers = int(os.getenv("NUM_WORKER_THREADS", "2"))
-        num_gpus = int(os.getenv("NUM_GPUS", "2"))  # Actual GPU count
+        executor_config = get_config().get('executor', {})
+        num_workers = int(os.getenv("NUM_WORKER_THREADS", str(executor_config.get('num_worker_threads', 2))))
+        num_gpus = int(os.getenv("NUM_GPUS", str(executor_config.get('num_gpus', 2))))  # Actual GPU count
         pool = self._get_gpu_process_pool(num_workers, num_gpus)
 
         # Prepare args for each query with per-query timestamp_context
@@ -505,7 +511,7 @@ def create_dprrc_executor(
     controller_url: Optional[str] = None,
     worker_url: Optional[str] = None,
     slm_url: Optional[str] = None,
-    timeout: float = 60.0,
+    timeout: Optional[float] = None,
     enable_query_enhancement: bool = True
 ) -> DPRRCQueryExecutor:
     """

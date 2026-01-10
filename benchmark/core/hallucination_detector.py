@@ -9,6 +9,8 @@ from typing import List, Dict, Any, Optional
 
 import requests
 
+from benchmark.config import get_config
+
 
 class HallucinationDetector:
     """
@@ -22,6 +24,14 @@ class HallucinationDetector:
     ):
         self.slm_service_url = slm_service_url
         self.slm_timeout = slm_timeout
+
+        # Load hallucination detection config
+        self._config = get_config().get('hallucination', {})
+        self._max_retries = self._config.get('max_retries', 3)
+        self._base_delay = self._config.get('base_delay', 1.0)
+        self._confidence_threshold = self._config.get('confidence_threshold', 0.7)
+        self._max_suspicious_terms = self._config.get('max_suspicious_terms', 5)
+        self._max_terms_extracted = self._config.get('max_terms_extracted', 50)
 
     def detect_via_slm(
         self,
@@ -45,13 +55,10 @@ class HallucinationDetector:
             Dict with hallucination analysis results
         """
         try:
-            valid_terms = self._extract_valid_terms(glossary)[:50]
-
-            max_retries = 3
-            base_delay = 1.0
+            valid_terms = self._extract_valid_terms(glossary)[:self._max_terms_extracted]
 
             last_error = None
-            for attempt in range(max_retries):
+            for attempt in range(self._max_retries):
                 try:
                     response = requests.post(
                         f"{self.slm_service_url}/check_hallucination",
@@ -76,9 +83,9 @@ class HallucinationDetector:
                         }
                     elif response.status_code >= 500:
                         last_error = f"HTTP {response.status_code}"
-                        if attempt < max_retries - 1:
-                            delay = base_delay * (2 ** attempt)
-                            print(f"SLM service error (attempt {attempt + 1}/{max_retries}), retrying in {delay}s...")
+                        if attempt < self._max_retries - 1:
+                            delay = self._base_delay * (2 ** attempt)
+                            print(f"SLM service error (attempt {attempt + 1}/{self._max_retries}), retrying in {delay}s...")
                             time.sleep(delay)
                             continue
                     else:
@@ -87,22 +94,22 @@ class HallucinationDetector:
 
                 except requests.Timeout:
                     last_error = "timeout"
-                    if attempt < max_retries - 1:
-                        delay = base_delay * (2 ** attempt)
-                        print(f"SLM service timeout (attempt {attempt + 1}/{max_retries}), retrying in {delay}s...")
+                    if attempt < self._max_retries - 1:
+                        delay = self._base_delay * (2 ** attempt)
+                        print(f"SLM service timeout (attempt {attempt + 1}/{self._max_retries}), retrying in {delay}s...")
                         time.sleep(delay)
                         continue
                     break
                 except requests.ConnectionError as e:
                     last_error = f"connection error: {e}"
-                    if attempt < max_retries - 1:
-                        delay = base_delay * (2 ** attempt)
-                        print(f"SLM connection error (attempt {attempt + 1}/{max_retries}), retrying in {delay}s...")
+                    if attempt < self._max_retries - 1:
+                        delay = self._base_delay * (2 ** attempt)
+                        print(f"SLM connection error (attempt {attempt + 1}/{self._max_retries}), retrying in {delay}s...")
                         time.sleep(delay)
                         continue
                     break
 
-            print(f"SLM hallucination detection failed after {max_retries} attempts ({last_error})")
+            print(f"SLM hallucination detection failed after {self._max_retries} attempts ({last_error})")
             return self.detect_fallback(system_response, glossary, confidence)
 
         except Exception as e:
@@ -167,7 +174,7 @@ class HallucinationDetector:
                 if clean_word not in valid_terms:
                     suspicious_terms.append(clean_word)
 
-        is_uncertain = confidence < 0.7 or any(
+        is_uncertain = confidence < self._confidence_threshold or any(
             word in response.lower()
             for word in ['uncertain', 'mixed', 'perspectives', 'disputed', 'conflicting']
         )
