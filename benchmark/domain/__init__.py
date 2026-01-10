@@ -1,26 +1,16 @@
 """
 Benchmark Domain Layer
 
-Core domain interfaces, entities, and value objects for benchmarks.
+Interfaces, services, and value objects for benchmark evaluation.
 """
 
-from .interfaces import (
-    IQueryExecutor,
-    QueryExecutionResult,
-    IEvaluator,
-    IResultStorage,
-    IDatasetGenerator,
-    BenchmarkDataset,
-)
+from .interfaces import IQueryExecutor, QueryExecutionResult
+from .services import EvaluationService
+from .value_objects import CorrectnessResult
 
 __all__ = [
-    # Interfaces
     'IQueryExecutor',
-    'IEvaluator',
-    'IResultStorage',
-    'IDatasetGenerator',
-
-    # Data Classes
     'QueryExecutionResult',
-    'BenchmarkDataset',
+    'EvaluationService',
+    'CorrectnessResult',
 ]

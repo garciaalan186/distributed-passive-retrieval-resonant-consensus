@@ -1,36 +1,12 @@
 """
 Benchmark Domain Interfaces
 
-These interfaces define the contracts for benchmark components.
-All implementations must adhere to these interfaces to ensure:
-- Consistent behavior across different implementations
-- Easy mocking for testing
-- Decoupling from infrastructure details
+Query executor interface and result dataclass.
 """
 
-from .query_executor import (
-    IQueryExecutor,
-    QueryExecutionResult
-)
-from .evaluator import IEvaluator
-from .result_storage import IResultStorage
-from .dataset_generator import (
-    IDatasetGenerator,
-    BenchmarkDataset
-)
+from .query_executor import IQueryExecutor, QueryExecutionResult
 
 __all__ = [
-    # Query Execution
     'IQueryExecutor',
     'QueryExecutionResult',
-
-    # Evaluation
-    'IEvaluator',
-
-    # Storage
-    'IResultStorage',
-
-    # Dataset Generation
-    'IDatasetGenerator',
-    'BenchmarkDataset',
 ]

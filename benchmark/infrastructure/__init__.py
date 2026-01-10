@@ -1,12 +1,12 @@
 """
 Benchmark Infrastructure
 
-Infrastructure implementations for benchmarks (executors, storage, config).
+Infrastructure implementations for benchmarks.
 """
 
-from .executors import DPRRCQueryExecutor, HTTPQueryExecutor
+from .executors import DPRRCQueryExecutor, create_dprrc_executor
 
 __all__ = [
     'DPRRCQueryExecutor',
-    'HTTPQueryExecutor',
+    'create_dprrc_executor',
 ]
