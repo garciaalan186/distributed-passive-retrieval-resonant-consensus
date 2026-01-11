@@ -89,6 +89,11 @@ class SyntheticHistoryGeneratorV2:
         self.queries: List[Query] = []
         self.causal_graph: Dict[str, List[str]] = defaultdict(list)
 
+        # Pre-built indices for O(1) lookups (optimization for large scale)
+        self._events_by_domain_year: Dict[str, Dict[int, List[Event]]] = defaultdict(lambda: defaultdict(list))
+        self._claims_by_domain_year: Dict[str, Dict[int, List[str]]] = defaultdict(lambda: defaultdict(list))
+        self._event_map: Dict[str, Event] = {}
+
         self.glossary = self._build_glossary()
 
     def generate(self, scale: str = "medium") -> Dict:
@@ -141,14 +146,15 @@ class SyntheticHistoryGeneratorV2:
         return terms
 
     def _extract_terms_from_events(self, event_ids: List[str]) -> List[str]:
-        """Extract synthetic terms from event content for validation."""
+        """Extract synthetic terms from event content for validation.
+
+        Optimized: Uses pre-built event map instead of rebuilding each call.
+        """
         valid_terms = self._get_all_valid_terms()
         found_terms = set()
 
-        event_map = {e.id: e for e in self.events}
-
         for event_id in event_ids:
-            event = event_map.get(event_id)
+            event = self._event_map.get(event_id)
             if event:
                 for word in event.content.split():
                     clean = word.strip('.,!?;:()"\'-')
@@ -331,12 +337,15 @@ class SyntheticHistoryGeneratorV2:
         year: int,
         event_type: str
     ) -> List[str]:
-        """Find events this event causally depends on"""
-        candidates = [
-            e for e in self.events
-            if e.topic == domain.name
-            and int(e.timestamp[:4]) < year
-        ]
+        """Find events this event causally depends on.
+
+        Optimized: Uses pre-built index instead of scanning all events.
+        """
+        # Collect candidates from previous years using index (O(years) instead of O(events))
+        candidates = []
+        domain_events = self._events_by_domain_year.get(domain.name, {})
+        for prev_year in range(self.start_year, year):
+            candidates.extend(domain_events.get(prev_year, []))
 
         if not candidates:
             return []
@@ -361,26 +370,34 @@ class SyntheticHistoryGeneratorV2:
         return [p.id for p in parents]
 
     def generate_events(self) -> List[Event]:
-        """Generate all events across all domains and years"""
+        """Generate all events across all domains and years.
+
+        Optimized: Uses indexed lookups instead of full scans.
+        """
         print(f"Generating events for {len(self.domains)} domains, "
               f"{self.end_year - self.start_year + 1} years...")
 
         event_count = 0
+        total_expected = len(self.domains) * (self.end_year - self.start_year + 1) * self.events_per_topic_per_year * self.perspectives_per_event
 
         for domain in self.domains:
             print(f"  Processing {domain.name}...")
 
             for year in range(self.start_year, self.end_year + 1):
+                # Generate claims and index them
                 claim = self._generate_consensus_claim(domain, year)
                 self.claims[claim.id] = claim
+                self._claims_by_domain_year[domain.name][year].append(claim.id)
 
                 if self.rng.random() < 0.3:
                     claim = self._generate_disputed_claim(domain, year)
                     self.claims[claim.id] = claim
+                    self._claims_by_domain_year[domain.name][year].append(claim.id)
 
                 if self.rng.random() < 0.05:
                     claim = self._generate_noise_claim(domain, year)
                     self.claims[claim.id] = claim
+                    self._claims_by_domain_year[domain.name][year].append(claim.id)
 
                 for _ in range(self.events_per_topic_per_year):
                     event_type = self._select_event_type()
@@ -396,11 +413,8 @@ class SyntheticHistoryGeneratorV2:
                             domain, year, event_type, perspective
                         )
 
-                        year_claims = [
-                            c.id for c in self.claims.values()
-                            if c.topic == domain.name
-                            and c.timestamp[:4] == str(year)
-                        ]
+                        # Use indexed claims lookup (O(1) instead of O(claims))
+                        year_claims = self._claims_by_domain_year[domain.name][year]
                         event_claims = self.rng.sample(
                             year_claims,
                             min(self.rng.randint(1, 3), len(year_claims))
@@ -421,24 +435,32 @@ class SyntheticHistoryGeneratorV2:
                         )
 
                         self.events.append(event)
+                        # Index the event for future causal parent lookups
+                        self._events_by_domain_year[domain.name][year].append(event)
+                        self._event_map[event_id] = event
                         event_count += 1
 
                         for parent in parents:
                             self.causal_graph[parent].append(event_id)
 
+                # Progress indicator for large scales
+                if event_count % 50000 == 0 and event_count > 0:
+                    print(f"    Progress: {event_count:,} / ~{total_expected:,} events ({100*event_count/total_expected:.1f}%)")
+
         print(f"  Generated {event_count} events, {len(self.claims)} claims")
         return self.events
 
     def generate_queries(self) -> List[Query]:
-        """Generate diverse benchmark queries with ground truth"""
+        """Generate diverse benchmark queries with ground truth.
+
+        Optimized: Uses indexed lookups instead of full scans.
+        """
         print("Generating benchmark queries...")
 
         for domain in self.domains:
             for year in range(self.start_year, self.end_year + 1):
-                year_events = [
-                    e for e in self.events
-                    if e.topic == domain.name and e.timestamp[:4] == str(year)
-                ]
+                # Use indexed lookup (O(1) instead of O(events))
+                year_events = self._events_by_domain_year[domain.name].get(year, [])
 
                 if year_events:
                     event_ids = [e.id for e in year_events[:5]]
@@ -466,7 +488,10 @@ class SyntheticHistoryGeneratorV2:
             ]
 
             if consensus_claims or disputed_claims:
-                domain_events = [e for e in self.events if e.topic == domain.name]
+                # Use indexed lookup to get all domain events
+                domain_events = []
+                for year_events in self._events_by_domain_year[domain.name].values():
+                    domain_events.extend(year_events)
                 domain_event_ids = [e.id for e in domain_events[:10]]
                 self.queries.append(Query(
                     id=f"consensus_{domain.name}".replace(" ", "_"),
@@ -484,10 +509,18 @@ class SyntheticHistoryGeneratorV2:
                     forbidden_terms=list(REAL_WORLD_FORBIDDEN_TERMS)
                 ))
 
+        # Build perspective index for efficient lookups
+        events_by_perspective: Dict[str, Dict[str, List[Event]]] = defaultdict(lambda: defaultdict(list))
+        for domain_name, year_events in self._events_by_domain_year.items():
+            for events in year_events.values():
+                for e in events:
+                    events_by_perspective[domain_name][e.perspective.value if hasattr(e.perspective, 'value') else str(e.perspective)].append(e)
+
         for domain in self.domains:
             for p1, p2 in itertools.combinations(Perspective, 2):
-                p1_events = [e for e in self.events if e.topic == domain.name and e.perspective == p1]
-                p2_events = [e for e in self.events if e.topic == domain.name and e.perspective == p2]
+                # Use indexed lookup
+                p1_events = events_by_perspective[domain.name].get(p1.value, [])
+                p2_events = events_by_perspective[domain.name].get(p2.value, [])
 
                 if p1_events and p2_events:
                     event_ids = [e.id for e in (p1_events[:3] + p2_events[:3])]
