@@ -1,0 +1,10 @@
+# XXL Scale Configuration
+# Very large dataset for extended scalability testing
+
+name: xxl
+events_per_topic_per_year: 1200
+num_domains: 5
+perspectives_per_event: 3
+
+# Estimated totals:
+# events = 1200 × 5 domains × 11 years × 3 perspectives = 198,000

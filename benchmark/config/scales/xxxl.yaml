@@ -1,0 +1,13 @@
+# XXXL Scale Configuration
+# ~1 million events for scalability validation experiments
+# See benchmark/experiment_design.md for full experimental design
+
+name: xxxl
+events_per_topic_per_year: 6060
+num_domains: 5
+perspectives_per_event: 3
+
+# Estimated totals:
+# events = 6060 × 5 domains × 11 years × 3 perspectives ≈ 1,000,000
+# tokens ≈ 100M (avg ~100 tokens per event)
+# file size ≈ 500MB-1GB

@@ -1,0 +1,10 @@
+# S Scale Configuration
+# Small dataset for development iteration
+
+name: s
+events_per_topic_per_year: 5
+num_domains: 2
+perspectives_per_event: 2
+
+# Estimated totals:
+# events = 5 × 2 domains × 11 years × 2 perspectives = 220

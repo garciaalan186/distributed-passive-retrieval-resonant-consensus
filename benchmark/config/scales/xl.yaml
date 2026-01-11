@@ -1,0 +1,10 @@
+# XL Scale Configuration
+# Large-scale testing for performance validation
+
+name: xl
+events_per_topic_per_year: 300
+num_domains: 5
+perspectives_per_event: 3
+
+# Estimated totals:
+# events = 300 × 5 domains × 11 years × 3 perspectives = 49,500

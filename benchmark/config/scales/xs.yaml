@@ -1,0 +1,10 @@
+# XS Scale Configuration
+# Minimal dataset for quick testing and instrumentation verification
+
+name: xs
+events_per_topic_per_year: 1
+num_domains: 1
+perspectives_per_event: 2
+
+# Estimated totals:
+# events = 1 × 1 domain × 11 years × 2 perspectives = 22
