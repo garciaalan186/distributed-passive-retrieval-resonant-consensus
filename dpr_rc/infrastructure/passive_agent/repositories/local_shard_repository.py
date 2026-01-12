@@ -51,6 +51,17 @@ class LocalShardRepository:
         if shard_id in self._loaded_shards:
             return True
 
+        # Check if shard already exists in ChromaDB (optimization for multi-worker)
+        if self.embedding_repo.collection_exists(shard_id):
+            existing_count = self.embedding_repo.count(shard_id)
+            if existing_count > 0:
+                self._loaded_shards[shard_id] = {
+                    "document_count": existing_count,
+                    "loaded_from": "chromadb_existing",
+                }
+                self.logger.logger.info(f"Shard {shard_id} already in ChromaDB with {existing_count:,} documents")
+                return True
+
         self.logger.logger.info(f"Loading shard on-demand: {shard_id}")
 
         # Check for local dataset

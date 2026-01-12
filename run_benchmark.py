@@ -25,6 +25,14 @@ sys.path.insert(0, os.getcwd())
 
 # Scale configurations
 SCALE_CONFIG = {
+    "xs": {
+        "query_cap": 5,
+        "description": "Minimal (22 events)",
+    },
+    "s": {
+        "query_cap": 10,
+        "description": "Small (220 events)",
+    },
     "mini": {
         "query_cap": 5,
         "description": "Quick smoke test",
@@ -40,6 +48,18 @@ SCALE_CONFIG = {
     "large": {
         "query_cap": 25,
         "description": "Stress test (more historical data)",
+    },
+    "xl": {
+        "query_cap": 50,
+        "description": "Extended (50K events)",
+    },
+    "xxl": {
+        "query_cap": 100,
+        "description": "Very large (200K events)",
+    },
+    "xxxl": {
+        "query_cap": 100,
+        "description": "Maximum (1M events)",
     },
 }
 
@@ -209,7 +229,7 @@ Scale Levels:
 
     parser.add_argument(
         "scale",
-        choices=["mini", "small", "medium", "large"],
+        choices=list(SCALE_CONFIG.keys()),
         help="Benchmark scale level"
     )
 

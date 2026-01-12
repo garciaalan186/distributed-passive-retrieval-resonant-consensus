@@ -325,3 +325,7 @@ class ChromaDBRepository:
         except Exception as e:
             self.logger.logger.warning(f"Failed to get count for {shard_id}: {e}")
             return 0
+
+    def count(self, shard_id: str) -> int:
+        """Alias for get_collection_count for interface consistency."""
+        return self.get_collection_count(shard_id)

@@ -80,12 +80,20 @@ class ResearchBenchmarkSuite:
 
         return scale_levels
 
-    def _ingest_dataset(self, dataset: Dict):
-        """Ingest dataset into ChromaDB for Direct/UseCase mode."""
+    def _ingest_dataset(self, dataset: Dict, force_reingest: bool = False):
+        """Ingest dataset into ChromaDB for Direct/UseCase mode.
+
+        Skips ingestion if data already exists (optimization for large datasets).
+
+        Args:
+            dataset: Dataset dict with 'events' list
+            force_reingest: If True, re-ingest even if data exists
+        """
         print("\nIngesting dataset into ChromaDB...")
 
         repo = ChromaDBRepository()
 
+        # Group events by shard
         shards = {}
         for event in dataset.get("events", []):
             try:
@@ -111,17 +119,37 @@ class ResearchBenchmarkSuite:
             except Exception as e:
                 print(f"Warning: Skipping event {event.get('id')}: {e}")
 
+        # Check existing data and skip fully-populated shards
         total_inserted = 0
+        total_skipped = 0
+
         for shard_id, docs in shards.items():
             try:
+                # Check if shard already has sufficient data
+                existing_count = repo.count(shard_id) if repo.collection_exists(shard_id) else 0
+                expected_count = len(docs)
+
+                # Skip if shard is >= 95% populated (allow for minor discrepancies)
+                if not force_reingest and existing_count >= expected_count * 0.95:
+                    print(f"  {shard_id}: Skipped (already has {existing_count:,}/{expected_count:,} documents)")
+                    total_skipped += existing_count
+                    continue
+
+                # Ingest if shard is empty or needs more data
+                if existing_count > 0:
+                    print(f"  {shard_id}: Partial data ({existing_count:,}/{expected_count:,}), inserting remaining...")
+
                 count = repo.bulk_insert(shard_id, docs)
                 total_inserted += count
                 if count > 0:
-                    print(f"  {shard_id}: Inserted {count} documents (skipped {len(docs) - count} duplicates)")
+                    print(f"  {shard_id}: Inserted {count:,} documents (skipped {len(docs) - count:,} duplicates)")
             except Exception as e:
                 print(f"Error inserting shard {shard_id}: {e}")
 
-        print(f"Ingestion complete. Total new documents: {total_inserted}")
+        if total_skipped > 0:
+            print(f"Ingestion complete. Skipped: {total_skipped:,}, New: {total_inserted:,}")
+        else:
+            print(f"Ingestion complete. Total new documents: {total_inserted:,}")
 
     def run_full_benchmark(self):
         """Execute complete benchmark across all scale levels"""
