@@ -25,6 +25,13 @@ class ClaimType(Enum):
     NOISE = "noise"
 
 
+class RevisionType(Enum):
+    """Classification for belief revision events"""
+    DISPROVEN = "disproven"      # Original claim found to be false
+    REFINED = "refined"          # Original claim updated with more precision
+    SUPERSEDED = "superseded"    # Original claim replaced by better model
+
+
 @dataclass
 class Claim:
     """A single factual claim that can be agreed or disputed"""
@@ -83,6 +90,76 @@ class Query:
         d.setdefault('forbidden_terms', [])
         d.setdefault('validation_pattern', None)
         return d
+
+
+@dataclass
+class RevisionEvent:
+    """
+    A belief revision event that contradicts/updates an earlier claim.
+
+    Used for testing temporal RAG systems' ability to:
+    1. Return current (not outdated) information
+    2. Correctly attribute beliefs to their temporal context
+    3. Avoid hallucinations from superseded claims
+    """
+    id: str
+    original_claim_id: str          # ID of the claim being revised
+    original_claim_content: str     # Content of the original claim (for reference)
+    original_year: int              # When original claim was made
+    revision_year: int              # When revision occurred
+    revision_type: RevisionType     # disproven, refined, or superseded
+    content: str                    # Event text describing the revision
+    domain: str                     # Research domain
+    superseding_claim_id: Optional[str] = None  # New claim (if any)
+    superseding_claim_content: Optional[str] = None  # New claim content
+
+    def to_dict(self):
+        d = asdict(self)
+        d['revision_type'] = self.revision_type.value
+        return d
+
+    def to_event(self) -> Event:
+        """Convert to standard Event for ingestion into ChromaDB."""
+        return Event(
+            id=self.id,
+            timestamp=f"{self.revision_year}-06-15T12:00:00Z",
+            topic=self.domain,
+            event_type="revision",
+            content=self.content,
+            claims=[self.original_claim_id],
+            causal_parents=[],
+            agent_snapshot_id=f"revision_{self.id[:4]}",
+            perspective=Perspective.METHODOLOGIST  # Revisions are methodological
+        )
+
+
+@dataclass
+class RevisionMetadata:
+    """
+    Metadata tracking all revisions for validation purposes.
+
+    Used by benchmark validation to check if responses correctly
+    handle revised beliefs.
+    """
+    # Maps claim_id -> list of revision events that invalidate it
+    disproven_claims: Dict[str, List[str]] = field(default_factory=dict)
+
+    # Maps year -> list of claim_ids valid at that year
+    claims_valid_at_year: Dict[int, List[str]] = field(default_factory=dict)
+
+    # Maps claim_id -> superseding claim_id (if any)
+    supersession_chain: Dict[str, str] = field(default_factory=dict)
+
+    # All revision events
+    revision_events: List[RevisionEvent] = field(default_factory=list)
+
+    def to_dict(self):
+        return {
+            "disproven_claims": self.disproven_claims,
+            "claims_valid_at_year": {str(k): v for k, v in self.claims_valid_at_year.items()},
+            "supersession_chain": self.supersession_chain,
+            "revision_events": [r.to_dict() for r in self.revision_events]
+        }
 
 
 # Real-world terms that indicate hallucination in the synthetic alternate universe

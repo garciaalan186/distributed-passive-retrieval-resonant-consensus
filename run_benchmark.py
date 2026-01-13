@@ -153,7 +153,21 @@ def run_benchmark(scale: str, generate_data: bool = False):
 
     # Apply query cap
     queries = dataset['queries'][:query_cap]
-    print(f"Running {len(queries)} queries (capped from {len(dataset['queries'])} total)\n")
+
+    # Load overlay queries if enabled
+    use_overlay = os.getenv("USE_OVERLAY", "false").lower() == "true"
+    overlay_queries = []
+    if use_overlay:
+        overlay_path = Path(f"benchmark_results_local/{scale}/overlay_queries.json")
+        if overlay_path.exists():
+            with open(overlay_path) as f:
+                overlay_queries = json.load(f)
+            queries = queries + overlay_queries
+            print(f"Overlay mode: ENABLED - added {len(overlay_queries)} revision queries")
+        else:
+            print(f"Overlay mode: No overlay queries found at {overlay_path}")
+
+    print(f"Running {len(queries)} queries (base: {len(dataset['queries'][:query_cap])}, overlay: {len(overlay_queries)})\n")
 
     # Initialize benchmark suite
     benchmark = ResearchBenchmarkSuite(output_dir="benchmark_results_local")

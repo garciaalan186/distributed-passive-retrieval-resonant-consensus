@@ -263,12 +263,21 @@ class EvaluationService:
         response_lower = response.lower()
 
         # Check required terms (grounding)
+        # Handle special validation patterns
         missing_required = []
+        found_required = []
         for term in required_terms:
             if term.lower() not in response_lower:
                 missing_required.append(term)
+            else:
+                found_required.append(term)
 
-        grounding_passed = len(missing_required) == 0
+        # "any_required" means at least one required term must appear
+        # Default behavior requires ALL terms to appear
+        if validation_pattern == "any_required":
+            grounding_passed = len(found_required) > 0 or len(required_terms) == 0
+        else:
+            grounding_passed = len(missing_required) == 0
 
         # Check forbidden terms (hallucination)
         forbidden_found = []
@@ -278,9 +287,9 @@ class EvaluationService:
 
         hallucination_passed = len(forbidden_found) == 0
 
-        # Check optional pattern
+        # Check optional pattern (skip special keywords)
         pattern_matched = None
-        if validation_pattern:
+        if validation_pattern and validation_pattern not in ("any_required",):
             try:
                 pattern_matched = bool(re.search(validation_pattern, response, re.IGNORECASE))
             except re.error:
@@ -295,6 +304,7 @@ class EvaluationService:
             "grounding_passed": grounding_passed,
             "hallucination_passed": hallucination_passed,
             "missing_required": missing_required,
+            "found_required": found_required,
             "forbidden_found": forbidden_found,
             "pattern_matched": pattern_matched,
             "overall_passed": overall_passed

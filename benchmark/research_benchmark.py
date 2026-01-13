@@ -42,6 +42,9 @@ class ResearchBenchmarkSuite:
         # Executor configuration
         self.use_new_executor = os.getenv("USE_NEW_EXECUTOR", "false").lower() == "true"
 
+        # Overlay configuration (belief revision queries)
+        self.use_overlay = os.getenv("USE_OVERLAY", "false").lower() == "true"
+
         # Service URLs (env vars override config)
         services_config = self._config.get('services', {})
         self.controller_url = os.getenv("CONTROLLER_URL", services_config.get('controller_url', "http://localhost:8080"))
@@ -58,6 +61,8 @@ class ResearchBenchmarkSuite:
 
         print(f"Benchmark will run scales: {[s['name'] for s in self.scale_levels]}")
         print(f"Executor mode: {'UseCase (direct)' if self.use_new_executor else 'HTTP'}")
+        if self.use_overlay:
+            print(f"Overlay mode: ENABLED (belief revision queries included)")
 
     def _parse_scale_levels(self) -> List[Dict]:
         """Parse scale levels from BENCHMARK_SCALE env var."""
@@ -195,20 +200,28 @@ class ResearchBenchmarkSuite:
         if self.use_new_executor:
             self._ingest_dataset(dataset)
 
+        # Merge overlay queries if enabled
+        all_queries = dataset['queries']
+        if self.use_overlay:
+            overlay_queries = self._load_overlay_queries(scale_dir)
+            if overlay_queries:
+                all_queries = dataset['queries'] + overlay_queries
+                print(f"Added {len(overlay_queries)} overlay queries (total: {len(all_queries)})")
+
         print(f"Running DPR-RC queries...")
         dprrc_results = self.run_dprrc_queries(
-            dataset['queries'],
+            all_queries,
             scale_dir / "dprrc_results"
         )
 
         print(f"Running baseline queries...")
         baseline_results = self.run_baseline_queries(
-            dataset['queries'],
+            all_queries,
             scale_dir / "baseline_results"
         )
 
         comparison = self.compare_results(
-            dataset['queries'],
+            all_queries,
             dprrc_results,
             baseline_results,
             generator.glossary
@@ -220,7 +233,8 @@ class ResearchBenchmarkSuite:
             "scale": scale_name,
             "config": scale_config,
             "dataset_size": len(dataset['events']),
-            "query_count": len(dataset['queries']),
+            "query_count": len(all_queries),
+            "overlay_query_count": len(all_queries) - len(dataset['queries']) if self.use_overlay else 0,
             "dprrc_accuracy": comparison["dprrc_correct_rate"],
             "baseline_accuracy": comparison["baseline_correct_rate"],
             "dprrc_hallucination_rate": comparison["dprrc_hallucination_rate"],
@@ -689,6 +703,31 @@ class ResearchBenchmarkSuite:
         """Save JSON with pretty printing"""
         with open(path, "w") as f:
             json.dump(data, f, indent=2, default=str)
+
+    def _load_overlay_queries(self, scale_dir: Path) -> List[Dict]:
+        """Load overlay queries from overlay_queries.json if it exists.
+
+        Overlay queries test belief revision scenarios:
+        - current_status: Should NOT return disproven claims
+        - temporal_belief: Should return claims valid at a specific time
+        - belief_evolution: Should acknowledge revisions happened
+
+        Returns:
+            List of overlay query dicts, or empty list if file not found
+        """
+        overlay_path = scale_dir / "overlay_queries.json"
+        if not overlay_path.exists():
+            print(f"  No overlay queries found at {overlay_path}")
+            return []
+
+        try:
+            with open(overlay_path) as f:
+                overlay_queries = json.load(f)
+            print(f"  Loaded {len(overlay_queries)} overlay queries from {overlay_path}")
+            return overlay_queries
+        except Exception as e:
+            print(f"  Error loading overlay queries: {e}")
+            return []
 
 
 def upload_results_to_gcs(local_dir: Path):
